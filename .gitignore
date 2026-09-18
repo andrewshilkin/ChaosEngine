@@ -5,3 +5,4 @@ tmp/
 packages/discord-bot/config.json
 packages/discord-bot/config.json.tmp
 *.torrent
+packages/discord-bot/config.*.json
