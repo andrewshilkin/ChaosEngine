@@ -17,6 +17,15 @@ const adapters = [
     name: 'stalker-anomaly',
     script: path.join(root, 'stalker-anomaly/game-mod/gamedata/scripts/chaos_game_events.script'),
     manifest: path.join(root, 'stalker-anomaly/events.json'),
+    // Lua:  id = "spawn_dogs",
+    idPattern: /\bid\s*=\s*"([a-z0-9_]+)"/g,
+  },
+  {
+    name: 'gta4',
+    script: path.join(root, 'gta4/game-mod/ChaosEngine.cs'),
+    manifest: path.join(root, 'gta4/events.json'),
+    // C#:  something.Id = "wanted";
+    idPattern: /\.Id\s*=\s*"([a-z0-9_]+)"/g,
   },
 ];
 
@@ -25,7 +34,7 @@ for (const adapter of adapters) {
   const source = readFileSync(adapter.script, 'utf8');
   const manifest = JSON.parse(readFileSync(adapter.manifest, 'utf8'));
 
-  const inMod = new Set([...source.matchAll(/\bid\s*=\s*"([a-z0-9_]+)"/g)].map((m) => m[1]));
+  const inMod = new Set([...source.matchAll(adapter.idPattern)].map((m) => m[1]));
   const inManifest = new Set(manifest.events.map((e) => e.id));
 
   const missing = [...inMod].filter((id) => !inManifest.has(id));

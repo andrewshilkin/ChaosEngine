@@ -260,6 +260,36 @@ than just "didn't throw".
 has, so an id in one and not the other fails silently. `npm run check:manifest`
 turns that into an error.
 
+## 8b. A second adapter, in practice
+
+The GTA IV adapter is the honest test of everything above: a different engine, a
+different language, a different transport folder — and **zero host changes**.
+What it actually took:
+
+| Step | Effort |
+| --- | --- |
+| Reflect over the modding API to get real signatures | the bulk of it |
+| Port the runtime (JSON, log, manager, IPC) from Lua to C# | mechanical |
+| Write 20 events | the fun part |
+| Host-side work | none |
+
+The single most valuable step was **reflecting over the shipped assembly**
+rather than trusting memory or a wiki. GTA IV's .NET API is not the one people
+expect from later Script Hooks: there is no `Weapons.Give()`, and `MaxHealth`,
+`GravityMultiplier` and `TimeScale` are write-only. Every one of those would
+have been a silent in-game failure; instead they were compile errors found in a
+second.
+
+Do the equivalent for your engine before writing a line of event code. For a
+.NET game that means `ReflectionOnlyLoadFrom` + `GetExportedTypes`, then dumping
+the members you need — copy the DLL out of the game folder first, because a
+downloaded file carries a mark-of-the-web that makes the loader refuse it.
+
+Then wire a **compile or parse check into the test suite on day one**:
+`npm run lint:lua` for the Lua adapter, `npm run check:csharp` for the C# one.
+Both answer the same question — would this even load? — without a game.
+
+
 ## 9. Checklist
 
 ```bash

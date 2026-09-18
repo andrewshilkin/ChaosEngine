@@ -1,0 +1,31 @@
+{
+  "game": "gta4",
+  "_comment": "Presentation and balance overrides for the GTA IV adapter. The game is the source of truth for which events exist and for what is survivable -- it clamps every parameter to the range it declares. This file only retunes names, weights, cooldowns and defaults. Remove an entry to fall back to the mod's own values; set enabled:false to keep an event implemented but out of every ballot. Ballots take one event per category, so categories are what keep a vote varied.",
+
+  "events": [
+    { "id": "wanted",         "name": "Wanted",           "category": "police", "cooldown": 120, "weight": 1.0, "parameters": { "stars": 3 } },
+    { "id": "remove_wanted",  "name": "Clean Record",     "category": "police", "cooldown": 180, "weight": 0.8 },
+    { "id": "spawn_police",   "name": "Police Response",  "category": "police", "cooldown": 150, "weight": 1.0, "parameters": { "count": 3 } },
+    { "id": "helicopter",     "name": "Helicopter",       "category": "police", "cooldown": 300, "weight": 0.4 },
+
+    { "id": "spawn_enemy",    "name": "Ambush",           "category": "hostiles", "cooldown": 120, "weight": 1.0, "parameters": { "count": 3 } },
+    { "id": "vehicle_attack", "name": "Car Chase",        "category": "hostiles", "cooldown": 180, "weight": 0.8, "parameters": { "count": 2 } },
+
+    { "id": "spawn_vehicle",  "name": "Free Car",         "category": "gifts", "cooldown": 120, "weight": 1.0 },
+    { "id": "random_weapon",  "name": "Random Weapon",    "category": "gifts", "cooldown":  90, "weight": 1.0 },
+    { "id": "remove_weapons", "name": "Disarmed",         "category": "gifts", "cooldown": 240, "weight": 0.5 },
+
+    { "id": "heal",           "name": "Patch Up",         "category": "player", "cooldown": 120, "weight": 1.0 },
+    { "id": "damage",         "name": "Pain",             "category": "player", "cooldown": 120, "weight": 1.0, "parameters": { "amount": 25 } },
+    { "id": "ragdoll",        "name": "Ragdoll",          "category": "player", "cooldown":  90, "weight": 1.0, "parameters": { "seconds": 4 } },
+    { "id": "burn",           "name": "On Fire",          "category": "player", "cooldown": 240, "weight": 0.6 },
+    { "id": "super_jump",     "name": "Moon Jump",        "category": "player", "cooldown": 240, "weight": 0.8, "parameters": { "seconds": 30 } },
+    { "id": "speed",          "name": "Time Warp",        "category": "player", "cooldown": 240, "weight": 0.8, "parameters": { "scale": 0.5 } },
+    { "id": "random_teleport","name": "Somewhere Else",   "category": "player", "cooldown": 300, "weight": 0.5 },
+
+    { "id": "explode",        "name": "Explosion",        "category": "world", "cooldown": 180, "weight": 0.7 },
+    { "id": "weather",        "name": "Weather",          "category": "world", "cooldown": 300, "weight": 0.8 },
+    { "id": "time",           "name": "Time Skip",        "category": "world", "cooldown": 300, "weight": 0.8, "parameters": { "hour": 23 } },
+    { "id": "chaos",          "name": "CHAOS",            "category": "world", "cooldown": 600, "weight": 0.15, "parameters": { "count": 3 } }
+  ]
+}

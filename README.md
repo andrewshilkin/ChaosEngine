@@ -1,7 +1,15 @@
 # Chaos Engine
 
 A reusable engine for letting a community vote on chaotic events that happen
-inside a game, plus a S.T.A.L.K.E.R. Anomaly 1.5.3 adapter as the first target.
+inside a game, with two game adapters built on it.
+
+| Game | Adapter | Events |
+| --- | --- | --- |
+| S.T.A.L.K.E.R. Anomaly 1.5.3 | Lua, X-Ray script hooks | 42 |
+| GTA IV | C#, ScriptHookDotNet | 20 |
+
+The Discord bot, the voting, the ballots and the CLI are identical for both.
+Adding the second game changed no host code at all.
 
 ```
 Discord  ->  Discord bot  ->  ChaosEngine  ->  transport  ->  game adapter  ->  game
@@ -23,6 +31,7 @@ a stream overlay) means writing a new frontend, not touching the game.
 | `packages/core` | The reusable engine. Registry, cooldowns, ballots, voting, transports, protocol, CLI, mock game. No game and no Discord in here. |
 | `packages/discord-bot` | The Discord frontend: buttons, embeds, slash commands. |
 | `adapters/stalker-anomaly` | The Anomaly adapter: the in-game Lua mod plus its `events.json`. |
+| `adapters/gta4` | The GTA IV adapter: one C# script for ScriptHookDotNet plus its `events.json`. |
 | `tools` | Lua syntax linter, the headless Lua harness, and the mod installer. |
 | `docs` | Protocol, event authoring, and how to add another game. |
 
@@ -34,7 +43,8 @@ is the only file that knows what a bloodsucker is.
 
 * Node 20 or newer (18 works for the engine and CLI, but discord.js pulls in
   `undici`, which wants >= 18.17).
-* S.T.A.L.K.E.R. Anomaly 1.5.3 for the game side.
+* For the game side, either S.T.A.L.K.E.R. Anomaly 1.5.3, or GTA IV with
+  ScriptHook + ScriptHookDotNet.
 
 ## Quick start
 
@@ -64,9 +74,11 @@ works against it works against Anomaly.
 ### 2. Install the game mod
 
 ```bash
-npm run install-mod -- --game-root "C:/Games/Anomaly"
+npm run install-mod -- --game stalker --game-root "C:/Games/Anomaly"
+npm run install-mod -- --game gta4    --game-root "C:/Games/Grand Theft Auto IV/GTAIV"
 ```
 
+See [adapters/gta4/README.md](adapters/gta4/README.md) for the GTA IV specifics.
 Use `--link` instead of copying while developing, so edits to a `.script` file
 take effect on the next game start.
 
@@ -121,9 +133,11 @@ overrules them.
 ## Testing
 
 ```bash
-npm test            # everything below, in order
-npm run lint:lua    # parse every .script as Lua 5.1
-npm run test:lua    # run the mod headlessly against stubbed X-Ray APIs
+npm test               # everything below, in order
+npm run lint:lua       # parse every .script as Lua 5.1
+npm run check:manifest # events.json and each adapter agree
+npm run check:csharp   # compile the GTA IV script against ScriptHookDotNet
+npm run test:lua       # run the Anomaly mod headlessly against stubbed X-Ray APIs
 ```
 
 `npm run test:lua` is worth knowing about. It loads the real `chaos_*.script`

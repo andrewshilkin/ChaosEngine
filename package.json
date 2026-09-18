@@ -11,13 +11,14 @@
     "build": "tsc -b packages/core packages/discord-bot",
     "clean": "tsc -b --clean packages/core packages/discord-bot",
     "lint:lua": "node tools/lint-lua.mjs",
-    "test": "npm run lint:lua && npm run check:manifest && npm run test:lua && npm run build && node --test packages/core/dist/",
+    "test": "npm run lint:lua && npm run check:manifest && npm run check:csharp && npm run test:lua && npm run build && node --test packages/core/dist/",
     "chaos": "node packages/core/dist/cli.js",
     "mock-game": "node packages/core/dist/mock-game-cli.js",
     "bot": "node packages/discord-bot/dist/index.js",
     "install-mod": "node tools/install-mod.mjs",
     "test:lua": "node tools/lua-harness/run.mjs",
-    "check:manifest": "node tools/check-manifest.mjs"
+    "check:manifest": "node tools/check-manifest.mjs",
+    "check:csharp": "node tools/check-csharp.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
