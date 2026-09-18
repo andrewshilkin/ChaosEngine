@@ -1,0 +1,28 @@
+{
+  "name": "chaos-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reusable community-driven chaos event engine for games, with a S.T.A.L.K.E.R. Anomaly adapter",
+  "workspaces": [
+    "packages/core",
+    "packages/discord-bot"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/core packages/discord-bot",
+    "clean": "tsc -b --clean packages/core packages/discord-bot",
+    "lint:lua": "node tools/lint-lua.mjs",
+    "test": "npm run lint:lua && npm run check:manifest && npm run test:lua && npm run build && node --test packages/core/dist/",
+    "chaos": "node packages/core/dist/cli.js",
+    "mock-game": "node packages/core/dist/mock-game-cli.js",
+    "bot": "node packages/discord-bot/dist/index.js",
+    "install-mod": "node tools/install-mod.mjs",
+    "test:lua": "node tools/lua-harness/run.mjs",
+    "check:manifest": "node tools/check-manifest.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "fengari": "^0.1.5",
+    "luaparse": "^0.3.1",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "game": "stalker-anomaly",
+  "_comment": "Presentation and balance overrides. The game is the source of truth for which events exist and for what is survivable -- it clamps every parameter to the range it declares, so asking for 5 bloodsuckers gets you 1. This file only retunes names, weights, cooldowns and defaults. Remove an entry to fall back to the mod's own values; set enabled:false to keep an event implemented but out of every ballot. Ballots take one event per category and skip anything offered in the last two votes, so categories and cooldowns are what keep votes varied.",
+
+  "events": [
+    { "id": "spawn_bloodsucker", "name": "Bloodsucker",    "category": "mutants",  "cooldown": 180, "weight": 0.4, "parameters": { "count": 1 } },
+    { "id": "spawn_snork",       "name": "Snork",          "category": "mutants",  "cooldown": 150, "weight": 0.6, "parameters": { "count": 1 } },
+    { "id": "spawn_zombies",     "name": "Zombie Horde",   "category": "mutants",  "cooldown": 120, "weight": 1.0, "parameters": { "count": 4 } },
+    { "id": "spawn_dogs",        "name": "Blind Dog Pack", "category": "mutants",  "cooldown": 100, "weight": 1.0, "parameters": { "count": 4 } },
+    { "id": "spawn_rats",        "name": "Rat Swarm",      "category": "mutants",  "cooldown":  90, "weight": 1.0, "parameters": { "count": 4 } },
+    { "id": "spawn_boars",       "name": "Boar Herd",      "category": "mutants",  "cooldown": 120, "weight": 0.9, "parameters": { "count": 3 } },
+    { "id": "spawn_flesh",       "name": "Flesh Herd",     "category": "mutants",  "cooldown": 110, "weight": 0.9, "parameters": { "count": 4 } },
+    { "id": "spawn_fracture",    "name": "Fracture",       "category": "mutants",  "cooldown": 180, "weight": 0.5, "parameters": { "count": 1 } },
+    { "id": "spawn_psysucker",   "name": "Psysucker",      "category": "mutants",  "cooldown": 300, "weight": 0.25, "parameters": { "count": 1 } },
+    { "id": "spawn_burer",       "name": "Burer",          "category": "mutants",  "cooldown": 360, "weight": 0.2, "parameters": { "count": 1 } },
+    { "id": "spawn_chimera",     "name": "Chimera",        "category": "mutants",  "cooldown": 420, "weight": 0.15, "parameters": { "count": 1 } },
+    { "id": "spawn_pseudogiant", "name": "Pseudogiant",    "category": "mutants",  "cooldown": 600, "weight": 0.1, "parameters": { "count": 1 } },
+
+    { "id": "spawn_bandits",     "name": "Bandit Ambush",    "category": "factions", "cooldown": 150, "weight": 0.8, "parameters": { "count": 3 } },
+    { "id": "spawn_military",    "name": "Military Patrol",  "category": "factions", "cooldown": 180, "weight": 0.6, "parameters": { "count": 3 } },
+    { "id": "spawn_monolith",    "name": "Monolith Squad",   "category": "factions", "cooldown": 300, "weight": 0.2, "parameters": { "count": 2 } },
+    { "id": "spawn_stalkers",    "name": "Wandering Loners", "category": "factions", "cooldown": 120, "weight": 0.8, "parameters": { "count": 3 } },
+    { "id": "spawn_ally",        "name": "A Friend",         "category": "factions", "cooldown": 420, "weight": 0.5 },
+
+    { "id": "give_pistol",        "name": "Pistol",       "category": "loot", "cooldown": 120, "weight": 1.0 },
+    { "id": "give_shotgun",       "name": "Shotgun",      "category": "loot", "cooldown": 120, "weight": 1.0 },
+    { "id": "give_smg",           "name": "SMG",          "category": "loot", "cooldown": 120, "weight": 1.0 },
+    { "id": "give_random_weapon", "name": "Supply Drop",  "category": "loot", "cooldown":  90, "weight": 0.8 },
+    { "id": "give_grenades",      "name": "Grenades",     "category": "loot", "cooldown": 150, "weight": 0.8, "parameters": { "count": 2 } },
+    { "id": "give_bolt",          "name": "Bolts",        "category": "loot", "cooldown":  60, "weight": 0.6, "parameters": { "count": 5 } },
+    { "id": "give_ammo",          "name": "Ammo Crate",   "category": "loot", "cooldown": 100, "weight": 1.0, "parameters": { "count": 2 } },
+    { "id": "give_medkits",       "name": "First Aid",    "category": "loot", "cooldown": 120, "weight": 1.0, "parameters": { "count": 4 } },
+    { "id": "give_food",          "name": "Rations",      "category": "loot", "cooldown": 100, "weight": 0.9, "parameters": { "count": 4 } },
+    { "id": "give_vodka",         "name": "Vodka",        "category": "loot", "cooldown": 150, "weight": 0.8, "parameters": { "count": 3 } },
+    { "id": "give_tools",         "name": "Kit Bag",      "category": "loot", "cooldown": 240, "weight": 0.6, "parameters": { "count": 1 } },
+    { "id": "give_armour",        "name": "Armour",       "category": "loot", "cooldown": 300, "weight": 0.4, "parameters": { "count": 1 } },
+    { "id": "give_supplies",      "name": "Care Package", "category": "loot", "cooldown": 100, "weight": 1.0, "parameters": { "count": 4 } },
+    { "id": "give_artefact",      "name": "Artefact",     "category": "loot", "cooldown": 240, "weight": 0.4 },
+    { "id": "spawn_corpse",       "name": "Fresh Corpse", "category": "loot", "cooldown": 150, "weight": 0.8, "parameters": { "count": 1 } },
+
+    { "id": "heal_player",      "name": "Field Medic", "category": "player", "cooldown": 120, "weight": 1.0 },
+    { "id": "damage_player",    "name": "Pain",        "category": "player", "cooldown": 180, "weight": 0.8, "parameters": { "power": 0.25 } },
+    { "id": "irradiate_player", "name": "Hot Dose",    "category": "player", "cooldown": 180, "weight": 0.8, "parameters": { "amount": 0.2 } },
+    { "id": "drunk",            "name": "Drunk",       "category": "player", "cooldown": 300, "weight": 0.8, "parameters": { "seconds": 60 } },
+    { "id": "save_game",        "name": "Checkpoint",  "category": "player", "cooldown": 300, "weight": 0.6 },
+
+    { "id": "play_sound", "name": "Something You Heard", "category": "world", "cooldown":  90, "weight": 1.0 },
+    { "id": "nightfall",  "name": "Nightfall",           "category": "world", "cooldown": 900, "weight": 0.5 },
+    { "id": "daybreak",   "name": "Daybreak",            "category": "world", "cooldown": 900, "weight": 0.5 },
+    { "id": "emission",   "name": "Emission",            "category": "world", "cooldown": 1800, "weight": 0.1 },
+    { "id": "psi_storm",  "name": "Psi Storm",           "category": "world", "cooldown": 1200, "weight": 0.2 }
+  ]
+}

@@ -1,0 +1,818 @@
+--[[
+	Chaos Engine :: STALKER Anomaly adapter -- event definitions
+
+	This is the only file in the mod that contains game knowledge. Everything
+	else (chaos_rt_*) is reusable runtime. To support a different game, write a
+	new file like this one and leave the runtime alone.
+
+	Events are grouped by category. The host builds each ballot from *different*
+	categories, so a vote offers a monster, some loot, a world change and a
+	player effect rather than four spawns in a row.
+
+	    mutants    things that want to eat you
+	    factions   things that want to shoot you
+	    player     something happens to the player directly
+	    loot       something appears that is worth picking up
+	    world      the Zone itself changes
+--]]
+
+local INVALID_VERTEX = 4294967295
+
+--------------------------------------------------------------------------------
+-- placement
+--------------------------------------------------------------------------------
+
+local function actor_online()
+	return db and db.actor and db.actor:alive() and true or false
+end
+
+--[[
+	Finding somewhere to put a spawn.
+
+	level.vertex_in_direction() walks the AI grid, and when the walk is blocked
+	-- indoors, against a cliff, in a corridor -- it returns the last vertex it
+	could reach, which can be right on top of the player. The first version
+	trusted the result and that is exactly how bloodsuckers ended up in the
+	player's face.
+
+	So: try several directions, measure the distance actually achieved, and only
+	accept a candidate that really is far enough away. If none of the attempts
+	work, the event refuses. Nothing appearing at all is a better outcome than a
+	bloodsucker spawning inside the player.
+--]]
+local SPAWN_ATTEMPTS = 12
+
+local function find_spawn_point(min_d, max_d)
+	local actor = db.actor
+	local base_vid = actor:level_vertex_id()
+	local apos = actor:position()
+	local best_dist = 0
+
+	for _ = 1, SPAWN_ATTEMPTS do
+		local angle = math.random() * math.pi * 2
+		local want = min_d + math.random() * (max_d - min_d)
+		local dir = vector():set(math.cos(angle), 0, math.sin(angle))
+
+		local vid = level.vertex_in_direction(base_vid, dir, want)
+		if vid and vid < INVALID_VERTEX then
+			local pos = level.vertex_position(vid)
+			local got = apos:distance_to(pos)
+			if got >= min_d then
+				return pos, vid, actor:game_vertex_id()
+			end
+			if got > best_dist then best_dist = got end
+		end
+	end
+
+	chaos_rt_log.warn("spawn: no point at least %.0fm away after %d tries (best %.1fm)",
+		min_d, SPAWN_ATTEMPTS, best_dist)
+	return nil
+end
+
+--- Spawn `count` of a random pick from `sections`, each at its own point so a
+--- group arrives spread out rather than stacked.
+local function spawn_around(sections, count, min_d, max_d)
+	local spawned = 0
+	for _ = 1, count do
+		local pos, lvid, gvid = find_spawn_point(min_d, max_d)
+		if pos then
+			local section = sections[math.random(#sections)]
+			local se_obj = alife_create(section, pos, lvid, gvid)
+			if se_obj then
+				spawned = spawned + 1
+			else
+				chaos_rt_log.warn("spawn: alife_create('%s') returned nil", section)
+			end
+		end
+	end
+	return spawned
+end
+
+local function announce(name, n)
+	if n > 1 then
+		chaos_rt_ui.notify(string.format("%s x %d", name, n), 5)
+	else
+		chaos_rt_ui.notify(name, 5)
+	end
+end
+
+--------------------------------------------------------------------------------
+-- spawn tiers
+--------------------------------------------------------------------------------
+
+--[[
+	Danger tier decides how many appear and how far away, so the numbers come
+	from one place instead of per-event guesswork. The count cap is declared on
+	the event's parameter, which means the *game* enforces it: the validator
+	clamps whatever the host asks for.
+
+	Distances are deliberately generous. Something that spawns 30 m away and
+	comes looking for you is a fight; something that spawns 8 m away is an
+	ambush you never had a chance to react to.
+--]]
+local TIERS = {
+	-- One of these is already a fight worth losing.
+	apex  = { min = 1, max = 1, default = 1, near = 30, far = 50 },
+	-- Individually weak, dangerous in numbers.
+	pack  = { min = 1, max = 6, default = 4, near = 22, far = 38 },
+	-- Armed humans. They shoot from range, so they start further out.
+	squad = { min = 1, max = 4, default = 3, near = 35, far = 60 },
+	-- Harmless scenery: corpses, crates.
+	prop  = { min = 1, max = 3, default = 1, near = 12, far = 25 },
+}
+
+--------------------------------------------------------------------------------
+-- mutants
+--------------------------------------------------------------------------------
+
+local MUTANTS = {
+	{
+		id = "spawn_bloodsucker", name = "Bloodsucker", tier = "apex",
+		cooldown = 180, weight = 0.4,
+		sections = { "bloodsucker_normal", "bloodsucker_strong" },
+	},
+	{
+		id = "spawn_snork", name = "Snork", tier = "apex",
+		cooldown = 150, weight = 0.6,
+		sections = { "snork_normal", "snork_strong" },
+	},
+	{
+		id = "spawn_zombies", name = "Zombie Horde", tier = "pack",
+		cooldown = 120, weight = 1.0,
+		sections = { "zombie_weak", "zombie_normal", "zombie_strong" },
+	},
+	{
+		id = "spawn_dogs", name = "Blind Dog Pack", tier = "pack",
+		cooldown = 100, weight = 1.0,
+		sections = { "dog_weak", "dog_normal", "dog_strong" },
+	},
+	{
+		id = "spawn_rats", name = "Rat Swarm", tier = "pack",
+		cooldown = 90, weight = 1.0,
+		sections = { "rat_weak", "rat_normal", "tushkano_normal" },
+	},
+	{
+		id = "spawn_boars", name = "Boar Herd", tier = "pack",
+		cooldown = 120, weight = 0.9, count = 3,
+		sections = { "boar_normal", "boar_strong" },
+	},
+	{
+		id = "spawn_flesh", name = "Flesh Herd", tier = "pack",
+		cooldown = 110, weight = 0.9,
+		sections = { "flesh_weak", "flesh_normal" },
+	},
+	{
+		id = "spawn_fracture", name = "Fracture", tier = "apex",
+		cooldown = 180, weight = 0.5,
+		sections = { "fracture_normal" },
+	},
+	{
+		id = "spawn_chimera", name = "Chimera", tier = "apex",
+		cooldown = 420, weight = 0.15,
+		sections = { "chimera_weak", "chimera_normal" },
+	},
+	{
+		id = "spawn_pseudogiant", name = "Pseudogiant", tier = "apex",
+		cooldown = 600, weight = 0.1,
+		sections = { "gigant_weak", "gigant_normal" },
+	},
+	{
+		id = "spawn_burer", name = "Burer", tier = "apex",
+		cooldown = 360, weight = 0.2,
+		sections = { "burer_weak", "burer_normal" },
+	},
+	{
+		id = "spawn_psysucker", name = "Psysucker", tier = "apex",
+		cooldown = 300, weight = 0.25,
+		sections = { "psysucker_normal" },
+	},
+}
+
+--------------------------------------------------------------------------------
+-- factions
+--------------------------------------------------------------------------------
+
+local FACTIONS = {
+	{
+		id = "spawn_bandits", name = "Bandit Ambush", tier = "squad",
+		cooldown = 150, weight = 0.8,
+		sections = { "sim_default_bandit_1", "sim_default_bandit_2", "sim_default_bandit_3" },
+	},
+	{
+		id = "spawn_military", name = "Military Patrol", tier = "squad",
+		cooldown = 180, weight = 0.6,
+		sections = { "sim_default_military_1", "sim_default_military_2", "sim_default_military_3" },
+	},
+	{
+		id = "spawn_monolith", name = "Monolith Squad", tier = "squad",
+		cooldown = 300, weight = 0.2,
+		count = 2,
+		sections = { "sim_default_monolith_2", "sim_default_monolith_3", "sim_default_monolith_4" },
+	},
+	{
+		id = "spawn_stalkers", name = "Wandering Loners", tier = "squad",
+		cooldown = 120, weight = 0.8,
+		sections = { "sim_default_stalker_1", "sim_default_stalker_2", "sim_default_stalker_3" },
+	},
+}
+
+--[[
+	An ally who tags along.
+
+	Recruiting is a two-step job. alife_create() makes a *server* object, but
+	axr_companions.add_to_actor_squad() needs the online game object, which does
+	not exist until the engine switches the NPC in -- a second or two later, and
+	sometimes not at all if the spawn point was out of range.
+
+	So: spawn, then poll with CreateTimeEvent until the object shows up, and
+	give up quietly after a few seconds rather than retrying forever.
+--]]
+local ALLY_SECTIONS = {
+	"sim_default_stalker_1", "sim_default_stalker_2", "sim_default_stalker_3",
+	"sim_default_csky_1", "sim_default_csky_2",
+	"sim_default_duty_2", "sim_default_freedom_2",
+}
+
+local ALLY_RECRUIT_TRIES = 12
+
+local function recruit_when_online(id, tries)
+	local obj = level.object_by_id(id)
+	if obj then
+		local ok, err = pcall(function()
+			axr_companions.add_to_actor_squad(obj)
+		end)
+		if ok then
+			chaos_rt_ui.notify(obj:character_name() .. " is with you", 6)
+			chaos_rt_log.info("ally %s (%s) joined the squad", obj:name(), id)
+		else
+			chaos_rt_log.warn("ally %s could not be recruited: %s", tostring(id), tostring(err))
+		end
+		return true
+	end
+
+	if tries <= 0 then
+		chaos_rt_log.warn("ally %s never came online, giving up", tostring(id))
+		return true
+	end
+	CreateTimeEvent("chaos_ally_" .. id, "recruit", 1, recruit_when_online, id, tries - 1)
+	return true
+end
+
+local function def_spawn_ally()
+	return {
+		id = "spawn_ally", name = "A Friend", category = "factions",
+		duration = 0, cooldown = 420, weight = 0.5,
+		available = function()
+			if not actor_online() then return false end
+			-- Without the companion framework this would spawn a stranger who
+			-- wanders off, which is not the event anyone voted for.
+			return axr_companions ~= nil
+		end,
+		execute = function(ctx, params)
+			local section = ALLY_SECTIONS[math.random(#ALLY_SECTIONS)]
+			-- Close enough to walk over, far enough not to appear on top of you.
+			local pos, lvid, gvid = find_spawn_point(12, 20)
+			if not pos then return false, "nowhere to put them" end
+
+			local se_obj = alife_create(section, pos, lvid, gvid)
+			if not se_obj then return false, "could not create " .. section end
+
+			CreateTimeEvent("chaos_ally_" .. se_obj.id, "recruit", 1,
+				recruit_when_online, se_obj.id, ALLY_RECRUIT_TRIES)
+			chaos_rt_ui.notify("Someone is coming to help", 5)
+			return true
+		end,
+	}
+end
+
+--- Shared factory for anything that spawns a group of creatures.
+local function def_spawn(spec, category)
+	local tier = TIERS[spec.tier]
+	return {
+		id       = spec.id,
+		name     = spec.name,
+		category = category,
+		duration = 0,
+		cooldown = spec.cooldown,
+		weight   = spec.weight,
+		params   = {
+			count = {
+				type    = "number",
+				min     = tier.min,
+				max     = tier.max,
+				default = spec.count or tier.default,
+			},
+		},
+		available = actor_online,
+		execute = function(ctx, params)
+			local n = spawn_around(spec.sections, params.count, tier.near, tier.far)
+			if n == 0 then return false, "nowhere to put it" end
+			announce(spec.name, n)
+			return true
+		end,
+	}
+end
+
+--------------------------------------------------------------------------------
+-- loot
+--------------------------------------------------------------------------------
+
+local WEAPONS = {
+	"wpn_ak74", "wpn_abakan", "wpn_mp5", "wpn_pm", "wpn_toz34",
+	"wpn_svd", "wpn_spas12", "wpn_groza", "wpn_vintorez", "wpn_fn2000",
+	"wpn_sig550", "wpn_val", "wpn_desert_eagle", "wpn_protecta",
+}
+
+local SUPPLIES = {
+	"medkit", "medkit_army", "medkit_scientic", "bandage", "antirad",
+	"energy_drink", "conserva", "bread", "vodka",
+	"ammo_5.45x39_fmj", "ammo_9x18_fmj", "ammo_12x70_buck",
+	"grenade_f1", "grenade_rgd5",
+}
+
+local ARTEFACTS = {
+	"af_medusa", "af_night_star", "af_cristall", "af_fireball", "af_gravi",
+}
+
+local CORPSES = {
+	"sim_default_stalker_dead", "sim_default_bandit_dead",
+	"sim_default_military_dead", "sim_default_csky_dead",
+	"sim_default_duty_dead", "sim_default_freedom_dead",
+	"sim_default_killer_dead", "sim_default_renegade_dead",
+}
+
+local function def_give_random_weapon()
+	return {
+		id = "give_random_weapon", name = "Random Weapon", category = "loot",
+		duration = 0, cooldown = 90, weight = 1.0,
+		available = actor_online,
+		execute = function(ctx, params)
+			local section = WEAPONS[math.random(#WEAPONS)]
+			local obj = alife_create_item(section, db.actor, { cond_r = { 0.6, 1.0 } })
+			if not obj then return false, "could not create " .. section end
+			chaos_rt_ui.notify("Supply drop: " .. section, 5)
+			return true
+		end,
+	}
+end
+
+--[[
+	Named starter weapons.
+
+	"Random Weapon" can hand a fresh character an SVD or nothing they can feed,
+	so these are the specific, predictable options: a gun plus ammo for it, so
+	the thing that arrives is immediately usable.
+--]]
+local STARTER_KITS = {
+	{
+		id = "give_pistol", name = "Pistol", weight = 1.0, cooldown = 120,
+		weapon = "wpn_pm", ammo = "ammo_9x18_fmj", ammo_count = 3,
+	},
+	{
+		id = "give_shotgun", name = "Shotgun", weight = 1.0, cooldown = 120,
+		weapon = "wpn_toz34", ammo = "ammo_12x70_buck", ammo_count = 3,
+	},
+	{
+		id = "give_smg", name = "SMG", weight = 1.0, cooldown = 120,
+		weapon = "wpn_mp5", ammo = "ammo_9x19_fmj", ammo_count = 3,
+	},
+}
+
+local function def_starter_kit(spec)
+	return {
+		id = spec.id, name = spec.name, category = "loot",
+		duration = 0, cooldown = spec.cooldown, weight = spec.weight,
+		available = actor_online,
+		execute = function(ctx, params)
+			if not alife_create_item(spec.weapon, db.actor, { cond_r = { 0.7, 1.0 } }) then
+				return false, "could not create " .. spec.weapon
+			end
+			for _ = 1, spec.ammo_count do
+				alife_create_item(spec.ammo, db.actor)
+			end
+			chaos_rt_ui.notify(spec.name .. " and ammo", 5)
+			return true
+		end,
+	}
+end
+
+--[[
+	Simple "here is a pile of things" handouts.
+
+	One row per event. `items` is a list of sections picked from at random,
+	`count` how many to hand over. Everything specific enough to be worth voting
+	for on its own belongs here rather than inside the Random Weapon lottery.
+--]]
+local HANDOUTS = {
+	{
+		id = "give_ammo", name = "Ammo Crate", cooldown = 100, weight = 1.0,
+		-- Boxes, not rounds: a box is 30ish, so two is a decent resupply.
+		count = 2, max = 6,
+		items = {
+			"ammo_5.45x39_fmj", "ammo_5.45x39_ap", "ammo_5.56x45_ss190",
+			"ammo_9x18_fmj", "ammo_9x19_fmj", "ammo_11.43x23_fmj",
+			"ammo_12x70_buck", "ammo_7.62x54_7h1",
+		},
+	},
+	{
+		id = "give_medkits", name = "First Aid", cooldown = 120, weight = 1.0,
+		count = 4, max = 8,
+		items = { "medkit", "medkit_army", "medkit_scientic", "bandage", "antirad" },
+	},
+	{
+		id = "give_food", name = "Rations", cooldown = 100, weight = 0.9,
+		count = 4, max = 8,
+		items = { "conserva", "bread", "energy_drink" },
+	},
+	{
+		id = "give_vodka", name = "Vodka", cooldown = 150, weight = 0.8,
+		count = 3, max = 6,
+		items = { "vodka" },
+	},
+	{
+		id = "give_tools", name = "Kit Bag", cooldown = 240, weight = 0.6,
+		count = 1, max = 3,
+		items = { "device_torch", "wpn_binoc", "detector_simple", "helm_respirator", "helm_hardhat" },
+	},
+	{
+		id = "give_armour", name = "Armour", cooldown = 300, weight = 0.4,
+		count = 1, max = 1,
+		items = { "novice_outfit", "stalker_outfit", "svoboda_light_outfit" },
+	},
+}
+
+local function def_handout(spec)
+	return {
+		id = spec.id, name = spec.name, category = "loot",
+		duration = 0, cooldown = spec.cooldown, weight = spec.weight,
+		params = {
+			count = { type = "number", min = 1, max = spec.max, default = spec.count },
+		},
+		available = actor_online,
+		execute = function(ctx, params)
+			local given = 0
+			for _ = 1, params.count do
+				local section = spec.items[math.random(#spec.items)]
+				if alife_create_item(section, db.actor) then given = given + 1 end
+			end
+			if given == 0 then return false, "could not create anything" end
+			announce(spec.name, given)
+			return true
+		end,
+	}
+end
+
+local function def_give_grenades()
+	return {
+		id = "give_grenades", name = "Grenades", category = "loot",
+		duration = 0, cooldown = 150, weight = 0.8,
+		params = { count = { type = "number", min = 1, max = 5, default = 2 } },
+		available = actor_online,
+		execute = function(ctx, params)
+			local given = 0
+			for _ = 1, params.count do
+				local section = (math.random() < 0.5) and "grenade_f1" or "grenade_rgd5"
+				if alife_create_item(section, db.actor) then given = given + 1 end
+			end
+			if given == 0 then return false, "could not create any" end
+			chaos_rt_ui.notify(string.format("Grenades x %d", given), 5)
+			return true
+		end,
+	}
+end
+
+local function def_give_bolt()
+	return {
+		id = "give_bolt", name = "Bolts", category = "loot",
+		duration = 0, cooldown = 60, weight = 1.0,
+		params = { count = { type = "number", min = 1, max = 20, default = 5 } },
+		available = actor_online,
+		execute = function(ctx, params)
+			local given = 0
+			for _ = 1, params.count do
+				if alife_create_item("bolt", db.actor) then given = given + 1 end
+			end
+			if given == 0 then return false, "could not create any" end
+			chaos_rt_ui.notify(string.format("Bolts x %d", given), 5)
+			return true
+		end,
+	}
+end
+
+local function def_give_supplies()
+	return {
+		id = "give_supplies", name = "Care Package", category = "loot",
+		duration = 0, cooldown = 100, weight = 1.0,
+		params = { count = { type = "number", min = 1, max = 8, default = 4 } },
+		available = actor_online,
+		execute = function(ctx, params)
+			local given = 0
+			for _ = 1, params.count do
+				local section = SUPPLIES[math.random(#SUPPLIES)]
+				if alife_create_item(section, db.actor) then given = given + 1 end
+			end
+			if given == 0 then return false, "could not create anything" end
+			chaos_rt_ui.notify(string.format("Care package x %d", given), 5)
+			return true
+		end,
+	}
+end
+
+local function def_give_artefact()
+	return {
+		id = "give_artefact", name = "Artefact", category = "loot",
+		duration = 0, cooldown = 240, weight = 0.4,
+		available = actor_online,
+		execute = function(ctx, params)
+			local section = ARTEFACTS[math.random(#ARTEFACTS)]
+			if not alife_create_item(section, db.actor) then
+				return false, "could not create " .. section
+			end
+			chaos_rt_ui.notify("Artefact: " .. section, 5)
+			return true
+		end,
+	}
+end
+
+local function def_spawn_corpse()
+	local tier = TIERS.prop
+	return {
+		id = "spawn_corpse", name = "Fresh Corpse", category = "loot",
+		duration = 0, cooldown = 150, weight = 0.8,
+		params = {
+			count = { type = "number", min = tier.min, max = tier.max, default = tier.default },
+		},
+		available = actor_online,
+		execute = function(ctx, params)
+			-- The *_dead profiles spawn already dead, carrying their gear.
+			local n = spawn_around(CORPSES, params.count, tier.near, tier.far)
+			if n == 0 then return false, "nowhere to put it" end
+			announce("Someone did not make it", n)
+			return true
+		end,
+	}
+end
+
+--------------------------------------------------------------------------------
+-- player
+--------------------------------------------------------------------------------
+
+local function def_heal_player()
+	return {
+		id = "heal_player", name = "Full Heal", category = "player",
+		duration = 0, cooldown = 120, weight = 1.0,
+		available = actor_online,
+		execute = function(ctx, params)
+			local actor = db.actor
+			-- Same idiom Anomaly itself uses for a full heal (bind_stalker_ext).
+			actor.health = 1
+			actor.bleeding = 1
+			actor.psy_health = 1
+			actor.radiation = 0
+			chaos_rt_ui.notify("Patched up", 5)
+			return true
+		end,
+	}
+end
+
+local function def_damage_player()
+	return {
+		id = "damage_player", name = "Pain", category = "player",
+		duration = 0, cooldown = 90, weight = 1.0,
+		params = { power = { type = "number", min = 0.05, max = 0.6, default = 0.25 } },
+		available = actor_online,
+		execute = function(ctx, params)
+			local actor = db.actor
+			-- Refuse to kill outright; chaos should hurt, not end the run.
+			if actor.health <= params.power + 0.05 then
+				return false, "would be lethal"
+			end
+			local h = hit()
+			h.draftsman = actor
+			h.type = hit.wound
+			h.power = params.power
+			h.impulse = 0
+			h.direction = vector():set(0, 0, 1)
+			h:bone("bip01_spine")
+			actor:hit(h)
+			chaos_rt_ui.notify("That hurt.", 4)
+			return true
+		end,
+	}
+end
+
+local function def_irradiate()
+	return {
+		id = "irradiate_player", name = "Hot Dose", category = "player",
+		duration = 0, cooldown = 150, weight = 0.8,
+		params = { amount = { type = "number", min = 0.05, max = 0.5, default = 0.2 } },
+		available = actor_online,
+		execute = function(ctx, params)
+			db.actor.radiation = params.amount
+			chaos_rt_ui.notify("Your detector is screaming", 5)
+			return true
+		end,
+	}
+end
+
+--- A post-process effector id of our own, kept well clear of the 2012-2020
+--- range Anomaly's own actor_effects uses.
+local PPE_ALCOHOL = 7331
+
+local function def_drunk()
+	return {
+		id = "drunk", name = "Drunk", category = "player",
+		-- The first event with a real duration: the effector runs until cleanup
+		-- takes it away again. See chaos_rt_manager for the lifecycle.
+		duration = 60, cooldown = 300, weight = 0.8,
+		params = { seconds = { type = "number", min = 10, max = 180, default = 60 } },
+		available = actor_online,
+		execute = function(ctx, params)
+			-- true = cyclic, so it keeps going until removed.
+			level.add_pp_effector("alcohol.ppe", PPE_ALCOHOL, true)
+			chaos_rt_ui.notify("You feel unsteady", 5)
+			return true, { effector = PPE_ALCOHOL }
+		end,
+		cleanup = function(ctx, state)
+			level.remove_pp_effector(state and state.effector or PPE_ALCOHOL)
+			chaos_rt_ui.notify("Your head clears", 4)
+		end,
+	}
+end
+
+local function def_save_game()
+	return {
+		id = "save_game", name = "Checkpoint", category = "player",
+		duration = 0, cooldown = 300, weight = 0.6,
+		available = actor_online,
+		execute = function(ctx, params)
+			-- Same idiom Anomaly uses for its own autosaves (itms_manager).
+			exec_console_cmd("save " .. user_name() .. " - chaos")
+			chaos_rt_ui.notify("Checkpoint saved", 5)
+			return true
+		end,
+	}
+end
+
+--------------------------------------------------------------------------------
+-- sound
+--------------------------------------------------------------------------------
+
+-- Only paths Anomaly's own scripts already reference, so they are known to ship.
+local SOUNDS = {
+	{ name = "Siren",     path = "ambient\\blowout\\blowout_siren" },
+	{ name = "Earthquake", path = "ambient\\earthquake" },
+	{ name = "Whispers",  path = "arszi_psy\\pripyat_whispers_final" },
+	{ name = "Teleport",  path = "anomaly\\teleport_incoming" },
+	{ name = "Tinnitus",  path = "affects\\tinnitus3a" },
+	{ name = "Humming",   path = "ambient\\special\\light_humming" },
+}
+
+local function def_play_sound()
+	return {
+		id = "play_sound", name = "Something You Heard", category = "world",
+		duration = 0, cooldown = 90, weight = 1.0,
+		available = actor_online,
+		execute = function(ctx, params)
+			local pick = SOUNDS[math.random(#SOUNDS)]
+			local snd = sound_object(pick.path)
+			if not snd then return false, "no sound object for " .. pick.path end
+			-- s2d plays in the player's head rather than at a world position:
+			-- no level geometry involved, so it cannot misfire indoors.
+			snd:play(db.actor, 0, sound_object.s2d)
+			chaos_rt_log.debug("played sound %s", pick.path)
+			return true
+		end,
+	}
+end
+
+--------------------------------------------------------------------------------
+-- world
+--------------------------------------------------------------------------------
+
+local function hour()
+	return level.get_time_hours()
+end
+
+--- Jump the clock forward to `target` hours. Never goes backwards: rewinding
+--- game time upsets schedulers all over Anomaly.
+local function skip_to_hour(target)
+	local now = hour()
+	local delta = (target - now) % 24
+	if delta == 0 then delta = 24 end
+	level.change_game_time(delta, 0, 0)
+	return delta
+end
+
+local function def_nightfall()
+	return {
+		id = "nightfall", name = "Nightfall", category = "world",
+		duration = 0, cooldown = 900, weight = 0.5,
+		available = function()
+			if not actor_online() then return false end
+			local h = hour()
+			return h >= 5 and h < 20
+		end,
+		execute = function(ctx, params)
+			local skipped = skip_to_hour(23)
+			chaos_rt_ui.notify(string.format("Night falls (+%dh)", skipped), 6)
+			return true
+		end,
+	}
+end
+
+local function def_daybreak()
+	return {
+		id = "daybreak", name = "Daybreak", category = "world",
+		duration = 0, cooldown = 900, weight = 0.5,
+		available = function()
+			if not actor_online() then return false end
+			local h = hour()
+			return h >= 20 or h < 5
+		end,
+		execute = function(ctx, params)
+			local skipped = skip_to_hour(8)
+			chaos_rt_ui.notify(string.format("The sun comes up (+%dh)", skipped), 6)
+			return true
+		end,
+	}
+end
+
+local function def_emission()
+	return {
+		id = "emission", name = "Emission", category = "world",
+		duration = 0, cooldown = 1800, weight = 0.1,
+		available = function()
+			if not actor_online() then return false end
+			if not surge_manager then return false end
+			return not surge_manager.is_started()
+		end,
+		execute = function(ctx, params)
+			surge_manager.start_surge()
+			chaos_rt_ui.notify("Emission incoming", 6)
+			return true
+		end,
+	}
+end
+
+local function def_psi_storm()
+	return {
+		id = "psi_storm", name = "Psi Storm", category = "world",
+		duration = 0, cooldown = 1200, weight = 0.2,
+		available = function()
+			if not actor_online() then return false end
+			if not psi_storm_manager then return false end
+			return not psi_storm_manager.is_started()
+		end,
+		execute = function(ctx, params)
+			psi_storm_manager.get_psi_storm_manager():start(true)
+			chaos_rt_ui.notify("Psi storm incoming", 6)
+			return true
+		end,
+	}
+end
+
+--------------------------------------------------------------------------------
+-- registration
+--------------------------------------------------------------------------------
+
+function register_all()
+	for i = 1, #MUTANTS do
+		chaos_rt_manager.register(def_spawn(MUTANTS[i], "mutants"))
+	end
+	for i = 1, #FACTIONS do
+		chaos_rt_manager.register(def_spawn(FACTIONS[i], "factions"))
+	end
+
+	for i = 1, #STARTER_KITS do
+		chaos_rt_manager.register(def_starter_kit(STARTER_KITS[i]))
+	end
+	for i = 1, #HANDOUTS do
+		chaos_rt_manager.register(def_handout(HANDOUTS[i]))
+	end
+	chaos_rt_manager.register(def_spawn_ally())
+
+	local defs = {
+		def_give_random_weapon(),
+		def_give_grenades(),
+		def_give_bolt(),
+		def_give_supplies(),
+		def_give_artefact(),
+		def_spawn_corpse(),
+		def_heal_player(),
+		def_damage_player(),
+		def_irradiate(),
+		def_drunk(),
+		def_save_game(),
+		def_play_sound(),
+		def_nightfall(),
+		def_daybreak(),
+		def_emission(),
+		def_psi_storm(),
+	}
+	for i = 1, #defs do
+		chaos_rt_manager.register(defs[i])
+	end
+
+	chaos_rt_log.info("registered %d events", chaos_rt_manager.count())
+end

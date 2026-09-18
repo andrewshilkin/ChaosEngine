@@ -1,0 +1,18 @@
+{
+  "name": "@chaos-engine/core",
+  "version": "0.1.0",
+  "description": "Game-agnostic chaos event engine: registry, cooldowns, voting, transports",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "chaos": "./dist/cli.js",
+    "chaos-mock-game": "./dist/mock-game-cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

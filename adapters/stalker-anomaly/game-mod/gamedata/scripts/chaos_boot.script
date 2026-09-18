@@ -1,0 +1,167 @@
+--[[
+	Chaos Engine :: STALKER Anomaly adapter -- bootstrap
+
+	Anomaly calls on_game_start() on every script that defines it, so this is
+	the mod's entry point. X-Ray rebuilds the whole Lua VM when a save is
+	loaded, so on_game_start runs once per game session and every module-level
+	value in this mod starts out fresh -- there is no state to carry over and
+	nothing to un-register.
+
+	Debug keys (no Discord needed -- this is how phases 1-4 of the plan are
+	tested). F9 is NOT usable: Anomaly binds it to quick_load.
+
+		F8   dump the event registry to the log and show a test notification
+		F10  execute the next event in the registry (cycles)
+		F11  show a fake vote panel for 10 seconds
+--]]
+
+local KEY_DUMP  = "DIK_F8"
+local KEY_FIRE  = "DIK_F10"
+local KEY_VOTE  = "DIK_F11"
+
+local TICK_MS = 100
+
+local inited    = false
+local next_tick = 0
+local cycle     = 0
+local fake_vote = nil
+
+--------------------------------------------------------------------------------
+-- lifecycle
+--------------------------------------------------------------------------------
+
+--- Run fn, and log rather than propagate if it blows up. A callback that
+--- raises inside X-Ray leaves the mod half-initialised and says nothing about
+--- it, which is exactly how the first version of this file failed.
+local function guard(label, fn, ...)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		chaos_rt_log.error("%s failed: %s", label, tostring(err))
+	end
+	return ok
+end
+
+local function init()
+	if inited then return end
+	inited = true
+	chaos_rt_log.info("init: starting up")
+	guard("ipc.start", chaos_rt_ipc.start)
+	chaos_rt_log.info("Mod loaded")
+	chaos_rt_ui.notify("DISCORD CHAOS ready", 4)
+end
+
+local function shutdown()
+	if not inited then return end
+	inited = false
+	guard("ipc.stop", chaos_rt_ipc.stop)
+	guard("ui.destroy", chaos_rt_ui.destroy)
+	chaos_rt_log.info("Mod unloaded")
+end
+
+local function tick_body()
+	local t = time_global()
+	if t < next_tick then return end
+	next_tick = t + TICK_MS
+
+	if not inited then init() end
+
+	chaos_rt_manager.update()
+	chaos_rt_ipc.update()
+	chaos_rt_ui.update()
+
+	if fake_vote then
+		local left = math.ceil((fake_vote.ends_at - t) / 1000)
+		if left <= 0 then
+			fake_vote = nil
+			chaos_rt_ui.hide_vote()
+			chaos_rt_ui.show_event("BLOODSUCKERS", 5)
+		else
+			chaos_rt_ui.update_vote(fake_vote.options, left)
+		end
+	end
+end
+
+local tick_failed = false
+
+local function tick()
+	if tick_failed then return end
+	local ok, err = pcall(tick_body)
+	if not ok then
+		-- Once per session: a tick that raises every frame would flood the log.
+		tick_failed = true
+		chaos_rt_log.error("tick failed, disabling the update loop: %s", tostring(err))
+	end
+end
+
+--------------------------------------------------------------------------------
+-- debug keys
+--------------------------------------------------------------------------------
+
+local function dump_registry()
+	local events = chaos_rt_manager.describe()
+	chaos_rt_log.info("--- %d registered events ---", #events)
+	for i = 1, #events do
+		local e = events[i]
+		chaos_rt_log.info("  %-22s %-10s cd=%ds available=%s",
+			e.id, e.category, e.cooldown, tostring(e.available))
+	end
+	chaos_rt_log.info("spool: %s", tostring(chaos_rt_ipc.spool_dir()))
+	chaos_rt_log.info("spool writable: %s", tostring(chaos_rt_ipc.is_ready()))
+	chaos_rt_ui.notify(string.format("DISCORD CHAOS: %d events", #events), 5)
+end
+
+local function fire_next()
+	local events = chaos_rt_manager.describe()
+	if #events == 0 then
+		chaos_rt_ui.notify("no events registered", 4)
+		return
+	end
+	cycle = (cycle % #events) + 1
+	local id = events[cycle].id
+	local result = chaos_rt_manager.execute(id, nil, { ignore_cooldown = true, source = "debug_key" })
+	if result.success then
+		chaos_rt_ui.show_event(result.name or id, 5)
+	else
+		chaos_rt_ui.notify(string.format("%s failed: %s", id, tostring(result.error)), 5)
+	end
+end
+
+local function show_fake_vote()
+	fake_vote = {
+		ends_at = time_global() + 10000,
+		options = {
+			{ label = "Bloodsuckers",  percent = 42 },
+			{ label = "Zombie Horde",  percent = 31 },
+			{ label = "Random Weapon", percent = 19 },
+			{ label = "Emission",      percent = 8  },
+		},
+	}
+	chaos_rt_ui.show_vote(fake_vote.options, 10)
+end
+
+local function on_key_press(key)
+	if not inited then return end
+	if key == DIK_keys[KEY_DUMP] then
+		guard("F8", dump_registry)
+	elseif key == DIK_keys[KEY_FIRE] then
+		guard("F10", fire_next)
+	elseif key == DIK_keys[KEY_VOTE] then
+		guard("F11", show_fake_vote)
+	end
+end
+
+--------------------------------------------------------------------------------
+-- entry point
+--------------------------------------------------------------------------------
+
+function on_game_start()
+	guard("register_all", chaos_game_events.register_all)
+
+	RegisterScriptCallback("actor_on_first_update", init)
+	RegisterScriptCallback("actor_on_update", tick)
+	RegisterScriptCallback("actor_on_net_destroy", shutdown)
+	RegisterScriptCallback("on_before_level_changing", shutdown)
+	RegisterScriptCallback("on_key_press", on_key_press)
+
+	chaos_rt_log.info("bootstrap registered")
+end

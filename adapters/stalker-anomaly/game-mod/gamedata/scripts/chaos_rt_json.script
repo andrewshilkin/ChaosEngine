@@ -1,0 +1,262 @@
+--[[
+	Chaos Engine Runtime :: minimal JSON codec (Lua 5.1, no dependencies)
+
+	Part of the game-agnostic runtime. Nothing in here knows about STALKER.
+
+	chaos_rt_json.encode(value)  -> string
+	chaos_rt_json.decode(string) -> value, err
+--]]
+
+local sformat = string.format
+local sbyte   = string.byte
+local ssub    = string.sub
+local schar   = string.char
+local tconcat = table.concat
+
+-- Assign this to force empty-table encoding as {} instead of [].
+EMPTY_OBJECT = {}
+
+local BACKSLASH = string.char(92)
+local QUOTE     = string.char(34)
+
+local escape_map = {
+	[QUOTE]     = BACKSLASH .. QUOTE,
+	[BACKSLASH] = BACKSLASH .. BACKSLASH,
+	["\b"]      = BACKSLASH .. "b",
+	["\f"]      = BACKSLASH .. "f",
+	["\n"]      = BACKSLASH .. "n",
+	["\r"]      = BACKSLASH .. "r",
+	["\t"]      = BACKSLASH .. "t",
+}
+
+-- Control characters, the quote and the backslash all have to be escaped.
+local ESCAPE_PATTERN = "[%z\1-\31" .. BACKSLASH .. QUOTE .. "]"
+
+local function escape_char(c)
+	return escape_map[c] or sformat(BACKSLASH .. "u%04x", sbyte(c))
+end
+
+local function escape_string(s)
+	return QUOTE .. s:gsub(ESCAPE_PATTERN, escape_char) .. QUOTE
+end
+
+local function is_array(t)
+	local n = 0
+	for k in pairs(t) do
+		if type(k) ~= "number" then return false end
+		n = n + 1
+	end
+	return n == #t
+end
+
+local encode_value
+
+local function encode_table(t, out, depth)
+	if depth > 32 then
+		out[#out + 1] = "null"
+		return
+	end
+	if t == EMPTY_OBJECT then
+		out[#out + 1] = "{}"
+		return
+	end
+	if is_array(t) then
+		if #t == 0 then
+			out[#out + 1] = "[]"
+			return
+		end
+		out[#out + 1] = "["
+		for i = 1, #t do
+			if i > 1 then out[#out + 1] = "," end
+			encode_value(t[i], out, depth + 1)
+		end
+		out[#out + 1] = "]"
+	else
+		local first = true
+		out[#out + 1] = "{"
+		for k, v in pairs(t) do
+			if type(k) == "string" or type(k) == "number" then
+				if not first then out[#out + 1] = "," end
+				first = false
+				out[#out + 1] = escape_string(tostring(k))
+				out[#out + 1] = ":"
+				encode_value(v, out, depth + 1)
+			end
+		end
+		out[#out + 1] = "}"
+	end
+end
+
+encode_value = function(v, out, depth)
+	local tv = type(v)
+	if v == nil then
+		out[#out + 1] = "null"
+	elseif tv == "boolean" then
+		out[#out + 1] = v and "true" or "false"
+	elseif tv == "number" then
+		if v ~= v or v == math.huge or v == -math.huge then
+			out[#out + 1] = "null"
+		elseif v == math.floor(v) and math.abs(v) < 1e15 then
+			out[#out + 1] = sformat("%d", v)
+		else
+			out[#out + 1] = sformat("%.14g", v)
+		end
+	elseif tv == "string" then
+		out[#out + 1] = escape_string(v)
+	elseif tv == "table" then
+		encode_table(v, out, depth)
+	else
+		out[#out + 1] = "null"
+	end
+end
+
+function encode(value)
+	local out = {}
+	encode_value(value, out, 0)
+	return tconcat(out)
+end
+
+--------------------------------------------------------------------------------
+-- Decoder
+--------------------------------------------------------------------------------
+
+local function skip_ws(s, i)
+	local _, j = s:find("^[ \t\r\n]*", i)
+	return (j or i - 1) + 1
+end
+
+local parse_value
+
+local function parse_error(i, msg)
+	return nil, i, sformat("json: %s at offset %d", msg, i)
+end
+
+local unescape_map = {
+	n = "\n",
+	t = "\t",
+	r = "\r",
+	b = "\b",
+	f = "\f",
+	["/"] = "/",
+	[QUOTE] = QUOTE,
+	[BACKSLASH] = BACKSLASH,
+}
+
+local function utf8_char(cp)
+	if cp < 0x80 then
+		return schar(cp)
+	elseif cp < 0x800 then
+		return schar(0xC0 + math.floor(cp / 0x40), 0x80 + (cp % 0x40))
+	end
+	return schar(
+		0xE0 + math.floor(cp / 0x1000),
+		0x80 + (math.floor(cp / 0x40) % 0x40),
+		0x80 + (cp % 0x40))
+end
+
+local function parse_string(s, i)
+	-- s:sub(i,i) is the opening quote.
+	local buf = {}
+	local j = i + 1
+	while true do
+		local c = ssub(s, j, j)
+		if c == "" then return parse_error(j, "unterminated string") end
+		if c == QUOTE then
+			return tconcat(buf), j + 1
+		elseif c == BACKSLASH then
+			local e = ssub(s, j + 1, j + 1)
+			local simple = unescape_map[e]
+			if simple then
+				buf[#buf + 1] = simple
+			elseif e == "u" then
+				local cp = tonumber(ssub(s, j + 2, j + 5), 16)
+				if not cp then return parse_error(j, "bad unicode escape") end
+				-- BMP only; surrogate pairs are not reassembled.
+				buf[#buf + 1] = utf8_char(cp)
+				j = j + 4
+			else
+				return parse_error(j, "bad escape")
+			end
+			j = j + 2
+		else
+			buf[#buf + 1] = c
+			j = j + 1
+		end
+	end
+end
+
+local function parse_number(s, i)
+	local num_str = s:match("^%-?%d+%.?%d*[eE]?[-+]?%d*", i)
+	if not num_str or num_str == "" then return parse_error(i, "bad number") end
+	local n = tonumber(num_str)
+	if not n then return parse_error(i, "bad number") end
+	return n, i + #num_str
+end
+
+local function parse_array(s, i, depth)
+	local arr = {}
+	local j = skip_ws(s, i + 1)
+	if ssub(s, j, j) == "]" then return arr, j + 1 end
+	while true do
+		local v, nj, err = parse_value(s, j, depth + 1)
+		if err then return nil, nj, err end
+		arr[#arr + 1] = v
+		j = skip_ws(s, nj)
+		local c = ssub(s, j, j)
+		if c == "," then
+			j = skip_ws(s, j + 1)
+		elseif c == "]" then
+			return arr, j + 1
+		else
+			return parse_error(j, "expected ',' or ']'")
+		end
+	end
+end
+
+local function parse_object(s, i, depth)
+	local obj = {}
+	local j = skip_ws(s, i + 1)
+	if ssub(s, j, j) == "}" then return obj, j + 1 end
+	while true do
+		if ssub(s, j, j) ~= QUOTE then return parse_error(j, "expected object key") end
+		local k, nj, err = parse_string(s, j)
+		if err then return nil, nj, err end
+		j = skip_ws(s, nj)
+		if ssub(s, j, j) ~= ":" then return parse_error(j, "expected ':'") end
+		j = skip_ws(s, j + 1)
+		local v
+		v, nj, err = parse_value(s, j, depth + 1)
+		if err then return nil, nj, err end
+		obj[k] = v
+		j = skip_ws(s, nj)
+		local c = ssub(s, j, j)
+		if c == "," then
+			j = skip_ws(s, j + 1)
+		elseif c == "}" then
+			return obj, j + 1
+		else
+			return parse_error(j, "expected ',' or '}'")
+		end
+	end
+end
+
+parse_value = function(s, i, depth)
+	if depth > 32 then return parse_error(i, "nesting too deep") end
+	local c = ssub(s, i, i)
+	if c == "{" then return parse_object(s, i, depth) end
+	if c == "[" then return parse_array(s, i, depth) end
+	if c == QUOTE then return parse_string(s, i) end
+	if c == "t" and ssub(s, i, i + 3) == "true" then return true, i + 4 end
+	if c == "f" and ssub(s, i, i + 4) == "false" then return false, i + 5 end
+	if c == "n" and ssub(s, i, i + 3) == "null" then return nil, i + 4 end
+	if c == "-" or c:match("%d") then return parse_number(s, i) end
+	return parse_error(i, "unexpected character '" .. c .. "'")
+end
+
+function decode(str)
+	if type(str) ~= "string" then return nil, "json: input is not a string" end
+	local i = skip_ws(str, 1)
+	local v, _, err = parse_value(str, i, 0)
+	if err then return nil, err end
+	return v, nil
+end

@@ -1,0 +1,74 @@
+--[[
+	Chaos Engine Runtime :: logging
+
+	Writes to the X-Ray log (visible in appdata\logs\*.log and with the in-game
+	console) and mirrors everything into appdata\chaos\chaos.log so the log can
+	be tailed by the operator without wading through the engine spam.
+--]]
+
+local PREFIX = "[DiscordChaos]"
+-- string.char(92) avoids having to think about backslash escaping in every
+-- tool that touches this file.
+PATH_SEP = string.char(92)
+
+LEVEL_DEBUG = 10
+LEVEL_INFO  = 20
+LEVEL_WARN  = 30
+LEVEL_ERROR = 40
+
+-- Bump to LEVEL_DEBUG while developing.
+min_level = LEVEL_INFO
+
+local level_names = {
+	[LEVEL_DEBUG] = "DEBUG",
+	[LEVEL_INFO]  = "INFO",
+	[LEVEL_WARN]  = "WARN",
+	[LEVEL_ERROR] = "ERROR",
+}
+
+local file_path = nil
+local file_failed = false
+
+function log_dir()
+	local ok, path = pcall(function()
+		return getFS():update_path("$app_data_root$", "")
+	end)
+	if ok and path then return path end
+	return ""
+end
+
+local function resolve_path()
+	if file_path then return file_path end
+	-- appdata\ always exists; the chaos\ spool folder may not, and Lua's
+	-- io.open cannot create it. The log has to work either way.
+	file_path = log_dir() .. "chaos.log"
+	return file_path
+end
+
+local function write_file(line)
+	if file_failed then return end
+	local f = io.open(resolve_path(), "a")
+	if not f then
+		file_failed = true
+		return
+	end
+	f:write(line, "\n")
+	f:close()
+end
+
+function write(level, fmt, ...)
+	if level < min_level then return end
+	local msg = fmt
+	if select("#", ...) > 0 then
+		local ok, formatted = pcall(string.format, fmt, ...)
+		msg = ok and formatted or (fmt .. " <badfmt>")
+	end
+	local line = string.format("%s %s %s", PREFIX, level_names[level] or "?", msg)
+	printf("%s", line)
+	write_file(line)
+end
+
+function debug(fmt, ...) write(LEVEL_DEBUG, fmt, ...) end
+function info(fmt, ...)  write(LEVEL_INFO,  fmt, ...) end
+function warn(fmt, ...)  write(LEVEL_WARN,  fmt, ...) end
+function error(fmt, ...) write(LEVEL_ERROR, fmt, ...) end

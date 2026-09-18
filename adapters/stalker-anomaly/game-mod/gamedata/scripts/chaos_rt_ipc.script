@@ -1,0 +1,323 @@
+--[[
+	Chaos Engine Runtime :: IPC
+
+	Transport between the game and the external Chaos Engine host (the Discord
+	bot, or the CLI test client).
+
+	X-Ray's Lua sandbox has no sockets, so the transport is a pair of
+	append-only JSON-lines spool files:
+
+		<appdata>\chaos\chaos_in.jsonl    host  -> game   (commands)
+		<appdata>\chaos\chaos_out.jsonl   game  -> host   (results, heartbeat)
+
+	Both sides only ever append whole lines and only ever consume lines that are
+	terminated by a newline, which makes the channel safe without file locking.
+	The host side implements the same format in
+	packages/core/src/transport/file-spool.ts.
+
+	Lua's io.open cannot create the chaos\ directory, and the engine's own
+	writer turned out not to create it either, so the *host* creates it (the
+	installer does too). Until it exists this module simply keeps retrying and
+	says so once in the log, rather than failing the whole mod at start.
+
+	Security: the protocol carries event *ids* and validated parameters only.
+	No Lua is ever received or evaluated.
+--]]
+
+PROTOCOL_VERSION = 1
+GAME_ID = "stalker-anomaly"
+
+-- How often the spool is polled, in milliseconds of game time.
+poll_interval = 250
+-- How often a heartbeat is emitted, in milliseconds.
+heartbeat_interval = 5000
+-- How often to re-check for a spool directory that did not exist yet.
+retry_interval = 5000
+
+local SEP = string.char(92)
+
+local base_dir     = nil
+local inbox_path   = nil
+local outbox_path  = nil
+local read_offset  = 0
+local next_poll    = 0
+local next_beat    = 0
+local next_retry   = 0
+local started      = false
+local ready        = false
+local warned       = false
+
+--------------------------------------------------------------------------------
+-- paths
+--------------------------------------------------------------------------------
+
+local function resolve_dirs()
+	if base_dir then return true end
+	local ok, root = pcall(function()
+		return getFS():update_path("$app_data_root$", "")
+	end)
+	if not ok or type(root) ~= "string" then
+		chaos_rt_log.error("ipc: cannot resolve $app_data_root$ (%s)", tostring(root))
+		return false
+	end
+	base_dir    = root .. "chaos" .. SEP
+	inbox_path  = base_dir .. "chaos_in.jsonl"
+	outbox_path = base_dir .. "chaos_out.jsonl"
+	return true
+end
+
+function spool_dir()
+	resolve_dirs()
+	return base_dir
+end
+
+function is_ready()
+	return ready
+end
+
+--------------------------------------------------------------------------------
+-- sending
+--------------------------------------------------------------------------------
+
+local function append(line)
+	local f = io.open(outbox_path, "a")
+	if not f then return false end
+	f:write(line, "\n")
+	f:close()
+	return true
+end
+
+function send(msg)
+	if not resolve_dirs() then return false end
+	msg.protocol = PROTOCOL_VERSION
+	msg.game = GAME_ID
+	return append(chaos_rt_json.encode(msg))
+end
+
+local function send_hello()
+	return send({
+		type   = "hello",
+		events = chaos_rt_manager.describe(),
+		ui     = true,
+	})
+end
+
+--------------------------------------------------------------------------------
+-- command handlers
+--------------------------------------------------------------------------------
+
+-- Everything the host is allowed to ask for. Anything not in this table is
+-- rejected and logged.
+local handlers = {}
+
+handlers["ping"] = function(msg)
+	send({ type = "pong", request_id = msg.request_id })
+end
+
+handlers["describe"] = function(msg)
+	send({ type = "events", request_id = msg.request_id, events = chaos_rt_manager.describe() })
+end
+
+handlers["event"] = function(msg)
+	local id = msg.id
+	if type(id) ~= "string" then
+		send({ type = "event_result", request_id = msg.request_id,
+		       success = false, error = "bad_request" })
+		return
+	end
+	local result = chaos_rt_manager.execute(id, msg.parameters, { source = "ipc" })
+	result.type       = "event_result"
+	result.request_id = msg.request_id
+	result.id         = id
+	send(result)
+
+	if result.success then
+		local label = result.name or id
+		local count = msg.parameters and msg.parameters.count
+		if count and count > 1 then
+			label = string.format("%s x %d", label, count)
+		end
+		chaos_rt_ui.show_event(label, 6)
+	end
+end
+
+handlers["vote_start"] = function(msg)
+	chaos_rt_ui.show_vote(msg.options or {}, msg.duration or 0)
+end
+
+handlers["vote_update"] = function(msg)
+	chaos_rt_ui.update_vote(msg.options, msg.seconds_left)
+end
+
+handlers["vote_end"] = function(msg)
+	chaos_rt_ui.hide_vote()
+	if msg.winner and msg.winner.label then
+		chaos_rt_ui.show_event(tostring(msg.winner.label), 5)
+	end
+end
+
+handlers["notify"] = function(msg)
+	chaos_rt_ui.notify(tostring(msg.text or ""), msg.seconds)
+end
+
+handlers["reset"] = function(msg)
+	chaos_rt_manager.reset()
+	chaos_rt_ui.hide_vote()
+	chaos_rt_ui.hide_event()
+	send({ type = "ack", request_id = msg.request_id })
+end
+
+local function dispatch(msg)
+	if type(msg) ~= "table" or type(msg.type) ~= "string" then
+		chaos_rt_log.warn("ipc: malformed message")
+		return
+	end
+	local handler = handlers[msg.type]
+	if not handler then
+		chaos_rt_log.warn("ipc: unsupported message type '%s'", msg.type)
+		send({ type = "error", request_id = msg.request_id, error = "unsupported_type" })
+		return
+	end
+	local ok, err = pcall(handler, msg)
+	if not ok then
+		chaos_rt_log.error("ipc: handler '%s' raised: %s", msg.type, tostring(err))
+	end
+end
+
+--------------------------------------------------------------------------------
+-- opening the spool
+--------------------------------------------------------------------------------
+
+--- Try to claim the spool. Succeeds only once the directory exists.
+local function open_spool()
+	-- Ignore anything the host wrote before this session started.
+	local f = io.open(inbox_path, "rb")
+	if f then
+		read_offset = f:seek("end")
+		f:close()
+	else
+		read_offset = 0
+	end
+
+	-- Fresh outbox per session so the host never replays stale results. This is
+	-- also the test for whether the directory exists at all.
+	local o = io.open(outbox_path, "w")
+	if not o then
+		if not warned then
+			warned = true
+			chaos_rt_log.warn(
+				"ipc: cannot write %s - the directory does not exist yet. " ..
+				"Start the bot or the chaos CLI once (it creates the folder); " ..
+				"this will keep retrying.", tostring(outbox_path))
+		end
+		return false
+	end
+	o:close()
+
+	ready = true
+	warned = false
+	chaos_rt_log.info("ipc: spool ready at %s", tostring(base_dir))
+	send_hello()
+	return true
+end
+
+--------------------------------------------------------------------------------
+-- polling
+--------------------------------------------------------------------------------
+
+local function poll_inbox()
+	local f = io.open(inbox_path, "rb")
+	if not f then return end
+
+	local size = f:seek("end")
+	if size < read_offset then
+		-- The host truncated/rotated the spool; start over.
+		chaos_rt_log.debug("ipc: inbox rotated, resetting offset")
+		read_offset = 0
+	end
+	if size == read_offset then
+		f:close()
+		return
+	end
+
+	f:seek("set", read_offset)
+	local chunk = f:read("*a") or ""
+	f:close()
+
+	-- Consume complete lines only; a partially written tail waits for the next poll.
+	local last_nl = chunk:match("^.*()\n")
+	if not last_nl then return end
+	read_offset = read_offset + last_nl
+
+	local body = chunk:sub(1, last_nl - 1)
+	for line in body:gmatch("[^\r\n]+") do
+		if line:match("%S") then
+			local msg, err = chaos_rt_json.decode(line)
+			if err then
+				chaos_rt_log.warn("ipc: bad JSON line: %s", tostring(err))
+			else
+				dispatch(msg)
+			end
+		end
+	end
+end
+
+local function heartbeat()
+	send({
+		type   = "heartbeat",
+		active = chaos_rt_manager.active_events(),
+		online = (db and db.actor) and true or false,
+	})
+end
+
+--------------------------------------------------------------------------------
+-- lifecycle
+--------------------------------------------------------------------------------
+
+function start()
+	if started then return end
+	if not resolve_dirs() then return end
+
+	started = true
+	ready = false
+	next_poll = 0
+	next_beat = 0
+	next_retry = 0
+	chaos_rt_log.info("ipc: spool path is %s", tostring(base_dir))
+	open_spool()
+end
+
+function stop()
+	if not started then return end
+	if ready then
+		send({ type = "goodbye" })
+	end
+	started = false
+	ready = false
+end
+
+--- Called every tick by the boot script.
+function update()
+	if not started then return end
+	local t = time_global()
+
+	if not ready then
+		if t >= next_retry then
+			next_retry = t + retry_interval
+			open_spool()
+		end
+		return
+	end
+
+	if t >= next_poll then
+		next_poll = t + poll_interval
+		local ok, err = pcall(poll_inbox)
+		if not ok then
+			chaos_rt_log.error("ipc: poll failed: %s", tostring(err))
+		end
+	end
+	if t >= next_beat then
+		next_beat = t + heartbeat_interval
+		pcall(heartbeat)
+	end
+end

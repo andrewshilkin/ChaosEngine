@@ -1,0 +1,120 @@
+--[[
+	Chaos Engine Runtime :: ChaosUI
+
+	Public API (unchanged from the development plan):
+
+		chaos_rt_ui.show_vote(options, duration)
+		chaos_rt_ui.update_vote(options, seconds_left)
+		chaos_rt_ui.hide_vote()
+
+		chaos_rt_ui.show_event(text, seconds)
+		chaos_rt_ui.hide_event()
+
+		chaos_rt_ui.notify(text, seconds)
+
+	`options` is an array of { label = "Bloodsuckers", percent = 42 }.
+
+	Implementation note -- why this is deliberately plain:
+
+	The first version built its own CUIScriptWnd and pushed it into the HUD
+	render list with AddDialogToRender. That crashes Anomaly on quick load.
+	X-Ray tears the whole Lua VM down and rebuilds it when a save is loaded, and
+	there is no callback that reliably fires first, so the window is collected
+	while the C++ HUD still holds a pointer to it.
+
+	So this renders through Anomaly's own notification statics instead. They are
+	owned by the engine, survive save loads by construction, and cost one line
+	of screen each. A richer multi-line panel needs a custom static registered
+	in UI XML and released on a real teardown hook; that is a later job, not an
+	MVP one.
+--]]
+
+-- Anomaly's text notification slots (see actor_menu.script):
+--   1 = gameplay_notification, 2 = showcase_notification (one line each).
+local SLOT_EVENT = 1
+local SLOT_VOTE  = 2
+
+local vote_shown = false
+
+local function set_msg(slot, text, seconds)
+	local ok, err = pcall(function()
+		actor_menu.set_msg(slot, tostring(text), seconds or 5)
+	end)
+	if not ok then
+		chaos_rt_log.warn("ui: set_msg failed: %s", tostring(err))
+	end
+	return ok
+end
+
+--- Condense a ballot into the one line the notification static can show.
+local function vote_line(options, seconds_left)
+	local best, best_pct = nil, -1
+	local count = 0
+	for i = 1, #options do
+		local pct = tonumber(options[i].percent) or 0
+		count = count + 1
+		if pct > best_pct then
+			best_pct = pct
+			best = options[i].label
+		end
+	end
+
+	if count == 0 then
+		return "DISCORD CHAOS - voting"
+	end
+	if best_pct <= 0 then
+		return string.format("DISCORD CHAOS - %d options - %ds", count, seconds_left or 0)
+	end
+	return string.format("DISCORD CHAOS - %s %d%% - %ds",
+		tostring(best), best_pct, seconds_left or 0)
+end
+
+--------------------------------------------------------------------------------
+-- vote board
+--------------------------------------------------------------------------------
+
+function show_vote(options, duration)
+	vote_shown = true
+	-- A short lifetime means the line clears itself if updates ever stop.
+	set_msg(SLOT_VOTE, vote_line(options or {}, duration or 0), 2)
+end
+
+function update_vote(options, seconds_left)
+	if not vote_shown then vote_shown = true end
+	set_msg(SLOT_VOTE, vote_line(options or {}, seconds_left or 0), 2)
+end
+
+function hide_vote()
+	if not vote_shown then return end
+	vote_shown = false
+	set_msg(SLOT_VOTE, "", 1)
+end
+
+--------------------------------------------------------------------------------
+-- event banner
+--------------------------------------------------------------------------------
+
+function show_event(text, seconds)
+	set_msg(SLOT_EVENT, text, seconds or 6)
+end
+
+function hide_event()
+	set_msg(SLOT_EVENT, "", 1)
+end
+
+--- One-shot message. Same slot as the event banner by design: an event
+--- announcement and its detail should not fight for two lines.
+function notify(text, seconds)
+	set_msg(SLOT_EVENT, text, seconds or 5)
+end
+
+--------------------------------------------------------------------------------
+-- lifecycle (kept so the runtime API is stable across adapters)
+--------------------------------------------------------------------------------
+
+function destroy()
+	vote_shown = false
+end
+
+function update()
+end

@@ -1,0 +1,22 @@
+{
+  "discord": {
+    "token": "",
+    "channelId": "000000000000000000",
+    "guildId": "000000000000000000",
+    "adminRoleId": ""
+  },
+  "vote": {
+    "durationSeconds": 20,
+    "optionCount": 4,
+    "strategy": "groups",
+    "maxPerCategory": 2,
+    "botVoters": 2,
+    "autoIntervalSeconds": 0
+  },
+  "game": {
+    "gameRoot": "C:/Games/Anomaly",
+    "manifest": "../../adapters/stalker-anomaly/events.json",
+    "globalCooldownSeconds": 30
+  },
+  "logLevel": "info"
+}
