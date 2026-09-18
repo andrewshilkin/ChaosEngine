@@ -171,6 +171,36 @@ The protocol carries event **ids** and validated parameters. No code crosses the
 boundary in either direction, and the Lua side never evaluates anything it
 receives — an unknown id is rejected and logged.
 
+## Licence and legal
+
+This project is [MIT licensed](LICENSE). That covers **this repository's own
+code and documentation only** — the engine, the Discord bot, the tools, and both
+game adapters.
+
+It does not cover, and this project does not distribute, any of the following:
+
+**The games.** You need your own copy of S.T.A.L.K.E.R. Anomaly or GTA IV. No
+game files, assets or configuration from either are included here.
+
+**ScriptHookDotNet.** The GTA IV adapter is a plain `.cs` script *for* the .NET
+Script Hook; it is not bundled with it, and it must not be. The Script Hook's
+own readme is explicit about this:
+
+> Do NOT include ScriptHookDotNet.asi or ScriptHookDotNet.dll in the release of
+> your script!
+
+Install it yourself from its own distribution. `npm run check:csharp` compiles
+against the copy already in your game folder and never copies it into the repo.
+If you are adding to this project, do not "helpfully" commit that DLL.
+
+**Trademarks.** Grand Theft Auto is a trademark of Rockstar Games.
+S.T.A.L.K.E.R. is a trademark of GSC Game World. This project is an unofficial,
+unaffiliated, non-commercial modding tool and is endorsed by neither.
+
+Dependencies are all permissive — MIT, Apache-2.0, BSD-3-Clause and 0BSD — so
+nothing in the tree imposes copyleft obligations on your own use.
+
+
 ## Status against the development plan
 
 Phases 1–8 of `stalker_discord_chaos_development_plan.md` are implemented: mod

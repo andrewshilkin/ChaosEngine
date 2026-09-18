@@ -25,5 +25,7 @@
     "fengari": "^0.1.5",
     "luaparse": "^0.3.1",
     "typescript": "^5.4.5"
-  }
+  },
+  "license": "MIT",
+  "author": "Andrii Shilkin"
 }
