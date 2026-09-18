@@ -377,6 +377,8 @@ namespace ChaosEngine
 
     public delegate EventOutcome EventAction(Dictionary<string, double> parameters);
     public delegate void EventCleanup(object state);
+    /// <summary>Called every tick while a timed event is still running.</summary>
+    public delegate void EventUpdate(object state);
     public delegate bool EventGate();
 
     public class ChaosEvent
@@ -392,6 +394,7 @@ namespace ChaosEngine
         public EventGate Available;
         public EventAction Execute;
         public EventCleanup Cleanup;
+        public EventUpdate Tick;
     }
 
     public class ChaosEventManager
@@ -611,7 +614,20 @@ namespace ChaosEngine
             int now = Now();
             for (int i = _active.Count - 1; i >= 0; i--)
             {
-                if (now < _active[i].ExpiresAt) continue;
+                if (now < _active[i].ExpiresAt)
+                {
+                    // Events that keep working while they run: stumbling when
+                    // drunk, re-boosting traffic, and so on.
+                    if (_active[i].Event.Tick != null)
+                    {
+                        try { _active[i].Event.Tick(_active[i].State); }
+                        catch (Exception ex)
+                        {
+                            ChaosLog.Error_("tick: " + _active[i].Event.Id + " threw: " + ex.Message);
+                        }
+                    }
+                    continue;
+                }
                 Active a = _active[i];
                 _active.RemoveAt(i);
                 if (a.Event.Cleanup == null) continue;
@@ -689,13 +705,49 @@ namespace ChaosEngine
 
         public static void HideVote() { _voteLine = null; _voteUntil = 0; }
 
-        /// <summary>Keeps the vote line on screen between updates.</summary>
+        private static string _activeLine;
+
+        /// <summary>
+        /// What is currently running, with a countdown. Without this a timed
+        /// effect like slow motion just happens to you with no way to tell what
+        /// it is or when it ends.
+        /// </summary>
+        public static void SetActive(List<object> active)
+        {
+            if (active == null || active.Count == 0) { _activeLine = null; return; }
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < active.Count; i++)
+            {
+                Dictionary<string, object> a = ChaosJson.AsMap(active[i]);
+                if (a == null) continue;
+                if (sb.Length > 0) sb.Append("   ");
+                object name, remaining;
+                a.TryGetValue("name", out name);
+                a.TryGetValue("remaining", out remaining);
+                sb.Append(name).Append(' ').Append(remaining).Append('s');
+            }
+            _activeLine = sb.Length > 0 ? sb.ToString() : null;
+        }
+
+        /// <summary>Keeps the vote line and the effect timers on screen.</summary>
         public static void Update()
         {
-            if (_voteLine == null) return;
-            if (Game.GameTime > _voteUntil) { _voteLine = null; return; }
-            try { Game.DisplayText(_voteLine, 200); }
-            catch { }
+            // DisplayText is a one-shot, so anything persistent is redrawn.
+            if (_voteLine != null)
+            {
+                if (Game.GameTime > _voteUntil) _voteLine = null;
+                else
+                {
+                    try { Game.DisplayText(_voteLine, 200); }
+                    catch { }
+                    return;
+                }
+            }
+            if (_activeLine != null)
+            {
+                try { Game.DisplayText(_activeLine, 200); }
+                catch { }
+            }
         }
     }
 
@@ -986,7 +1038,9 @@ namespace ChaosEngine
         private static readonly string[] CopModels = { "M_Y_COP", "M_Y_SWAT", "M_Y_COP_TRAFFIC" };
         private static readonly string[] EnemyModels = { "M_Y_GRUS_LO_01", "M_Y_GBIK_LO_01", "M_Y_THIEF", "M_Y_DEALER" };
         private static readonly string[] FunCars = { "infernus", "banshee", "comet", "turismo", "sultan", "nrg900", "sanchez" };
-        private static readonly string[] ChaseCars = { "police", "sultan", "banshee", "cavalcade" };
+        // Deliberately no "police" here: a police car made Car Chase look like
+        // the police event, and the two should read differently.
+        private static readonly string[] ChaseCars = { "sultan", "banshee", "cavalcade", "comet" };
         private static readonly string[] Helis = { "annihilator", "maverick", "polmav" };
 
         private static readonly Weapon[] GiveableWeapons =
@@ -1077,6 +1131,79 @@ namespace ChaosEngine
             catch { return null; }
         }
 
+        /// <summary>A random point within `radius` of the player, at ground level.</summary>
+        private static Vector3 PointAround(float radius)
+        {
+            Vector3 origin = Me().Position;
+            double angle = Rng.NextDouble() * Math.PI * 2;
+            // sqrt keeps the points evenly spread over the disc instead of
+            // bunching them around the player.
+            double distance = Math.Sqrt(Rng.NextDouble()) * radius;
+            Vector3 target = new Vector3(
+                origin.X + (float)(Math.Cos(angle) * distance),
+                origin.Y + (float)(Math.Sin(angle) * distance),
+                origin.Z);
+            try { return World.GetGroundPosition(target); }
+            catch { return target; }
+        }
+
+        /// <summary>Everyone nearby except the player.</summary>
+        private static List<Ped> NearbyPeds(float radius)
+        {
+            List<Ped> found = new List<Ped>();
+            try
+            {
+                Ped me = Me();
+                Ped[] all = World.GetPeds(me.Position, radius);
+                for (int i = 0; i < all.Length; i++)
+                {
+                    Ped p = all[i];
+                    if (p == null || !p.Exists()) continue;
+                    if (p.Equals(me)) continue;
+                    if (!p.isAliveAndWell) continue;
+                    found.Add(p);
+                }
+            }
+            catch (Exception ex) { ChaosLog.Debug_("NearbyPeds: " + ex.Message); }
+            return found;
+        }
+
+        /// <summary>Nearby vehicles, optionally skipping the one the player is in.</summary>
+        private static List<Vehicle> NearbyVehicles(float radius, bool includeMine)
+        {
+            List<Vehicle> found = new List<Vehicle>();
+            try
+            {
+                Ped me = Me();
+                Vehicle mine = me.CurrentVehicle;
+                Vehicle[] all = World.GetVehicles(me.Position, radius);
+                for (int i = 0; i < all.Length; i++)
+                {
+                    Vehicle v = all[i];
+                    if (v == null || !v.Exists()) continue;
+                    if (!includeMine && mine != null && mine.Exists() && v.Equals(mine)) continue;
+                    found.Add(v);
+                }
+            }
+            catch (Exception ex) { ChaosLog.Debug_("NearbyVehicles: " + ex.Message); }
+            return found;
+        }
+
+        /// <summary>Turn a spawned ped into something that actually comes for you.</summary>
+        private static void MakeHostile(Ped ped, Weapon weapon, int accuracy)
+        {
+            try
+            {
+                GiveWeapon(ped, weapon, 250);
+                ped.Accuracy = accuracy;
+                ped.Enemy = true;
+                ped.BlockPermanentEvents = true;   // do not wander off mid-fight
+                ped.Task.AlwaysKeepTask = true;
+                ped.Task.FightAgainst(Me());
+            }
+            catch (Exception ex) { ChaosLog.Debug_("MakeHostile: " + ex.Message); }
+        }
+
         /// <summary>
         /// Hand someone a weapon. There is no Give(): in this API a weapon is
         /// issued by setting the ammo on its slot.
@@ -1140,19 +1267,16 @@ namespace ChaosEngine
                 int made = 0;
                 for (int i = 0; i < count; i++)
                 {
-                    Ped cop = SpawnPed(CopModels, NearbyGround(18f));
+                    // Close enough to be unmistakable. At 18m they were often
+                    // behind a building and the event looked like nothing.
+                    Ped cop = SpawnPed(CopModels, NearbyGround(14f));
                     if (cop == null) continue;
                     made++;
-                    try
-                    {
-                        GiveWeapon(cop, Weapon.Handgun_Glock, 200);
-                        cop.Task.FightAgainst(Me());
-                    }
-                    catch { }
+                    MakeHostile(cop, Weapon.Handgun_Glock, 40);
                     Disown(cop);
                 }
                 if (made == 0) return EventOutcome.Refuse("could not spawn anyone");
-                ChaosUi.Notify("Police x " + made);
+                ChaosUi.Notify("Police are on you x " + made);
                 return EventOutcome.Ok();
             };
             m.Register(police);
@@ -1209,19 +1333,14 @@ namespace ChaosEngine
                 int made = 0;
                 for (int i = 0; i < count; i++)
                 {
-                    Ped thug = SpawnPed(EnemyModels, NearbyGround(22f));
+                    Ped thug = SpawnPed(EnemyModels, NearbyGround(16f));
                     if (thug == null) continue;
                     made++;
-                    try
-                    {
-                        GiveWeapon(thug, GiveableWeapons[Rng.Next(6)], 200);
-                        thug.Task.FightAgainst(Me());
-                    }
-                    catch { }
+                    MakeHostile(thug, GiveableWeapons[Rng.Next(6)], 35);
                     Disown(thug);
                 }
                 if (made == 0) return EventOutcome.Refuse("could not spawn anyone");
-                ChaosUi.Notify("Ambush x " + made);
+                ChaosUi.Notify("Ambush! x " + made);
                 return EventOutcome.Ok();
             };
             m.Register(enemies);
@@ -1249,16 +1368,29 @@ namespace ChaosEngine
                         {
                             GiveWeapon(driver, Weapon.SMG_MP5, 300);
                             driver.WillDoDrivebys = true;
+                            driver.Enemy = true;
+                            driver.BlockPermanentEvents = true;
+                            driver.Task.AlwaysKeepTask = true;
                             driver.Task.DriveTo(Me(), 30f, false);
                             Disown(driver);
                             made++;
+
+                            // A shooter in the passenger seat, so this reads as
+                            // an attack rather than someone driving badly.
+                            Ped shooter = car.CreatePedOnSeat(VehicleSeat.RightFront);
+                            if (shooter != null)
+                            {
+                                MakeHostile(shooter, Weapon.Rifle_AK47, 30);
+                                shooter.WillDoDrivebys = true;
+                                Disown(shooter);
+                            }
                         }
                     }
                     catch { }
                     Disown(car);
                 }
                 if (made == 0) return EventOutcome.Refuse("no room on the street");
-                ChaosUi.Notify("Chasers x " + made);
+                ChaosUi.Notify("Chasers on your tail x " + made);
                 return EventOutcome.Ok();
             };
             m.Register(chasers);
@@ -1390,7 +1522,7 @@ namespace ChaosEngine
 
             ChaosEvent moon = new ChaosEvent();
             moon.Id = "super_jump";
-            moon.Name = "Moon Jump";
+            moon.Name = "Low Gravity";
             moon.Category = "player";
             moon.Cooldown = 240;
             moon.Weight = 0.8;
@@ -1405,7 +1537,7 @@ namespace ChaosEngine
                 // Write-only in this API, so normal gravity is assumed on the way out.
                 me.GravityMultiplier = 0.35f;
                 Game.LocalPlayer.NeverGetsTired = true;
-                ChaosUi.Notify("Light on your feet");
+                ChaosUi.Notify("Low gravity - try jumping");
                 return EventOutcome.Ok();
             };
             moon.Cleanup = delegate(object state)
@@ -1469,14 +1601,16 @@ namespace ChaosEngine
             boom.Category = "world";
             boom.Cooldown = 180;
             boom.Weight = 0.7;
-            boom.Available = delegate { return PlayerReady() && Me().Health > 40; };
-            boom.Execute = delegate
+            boom.Params["count"] = ParamSpec.Number(1, 6, 2);
+            boom.Available = PlayerReady;
+            boom.Execute = delegate(Dictionary<string, double> p)
             {
-                // Slightly off the player: a direct hit is an instant death,
-                // which is a worse story than a near miss.
-                Vector3 at = Me().Position;
-                World.AddExplosion(new Vector3(at.X + 3f, at.Y + 3f, at.Z));
-                ChaosUi.Notify("Boom");
+                // Anywhere in a 100m circle with the player at the centre: it
+                // might be next to you, it might be across the street. A blast
+                // fixed to the player was just an instant death.
+                int shots = (int)p["count"];
+                for (int i = 0; i < shots; i++) World.AddExplosion(PointAround(100f));
+                ChaosUi.Notify(shots > 1 ? "Explosions x " + shots : "Something exploded");
                 return EventOutcome.Ok();
             };
             m.Register(boom);
@@ -1517,6 +1651,366 @@ namespace ChaosEngine
                 return EventOutcome.Ok();
             };
             m.Register(time);
+
+            // ---- mayhem in the street ----------------------------------------
+            ChaosEvent boost = new ChaosEvent();
+            boost.Id = "car_boost";
+            boost.Name = "Traffic Goes Mad";
+            boost.Category = "traffic";
+            boost.Cooldown = 240;
+            boost.Weight = 0.8;
+            boost.Duration = 15;
+            boost.Params["seconds"] = ParamSpec.Number(5, 60, 15);
+            boost.Available = PlayerReady;
+            boost.Execute = delegate
+            {
+                ChaosUi.Notify("Everyone forgot how to brake");
+                return EventOutcome.Ok();
+            };
+            // Re-applied every tick: one shove and the cars just settle down
+            // again, whereas sustained force is the pile-up people want.
+            boost.Tick = delegate
+            {
+                List<Vehicle> cars = NearbyVehicles(90f, false);
+                for (int i = 0; i < cars.Count; i++)
+                {
+                    try
+                    {
+                        if (!cars[i].isDriveable) continue;
+                        cars[i].ApplyForceRelative(new Vector3(0f, 22f, 0f));
+                    }
+                    catch { }
+                }
+            };
+            m.Register(boost);
+
+            ChaosEvent blowCar = new ChaosEvent();
+            blowCar.Id = "blow_car";
+            blowCar.Name = "Car Bomb";
+            blowCar.Category = "traffic";
+            blowCar.Cooldown = 150;
+            blowCar.Weight = 1.0;
+            blowCar.Params["count"] = ParamSpec.Number(1, 5, 1);
+            blowCar.Available = PlayerReady;
+            blowCar.Execute = delegate(Dictionary<string, double> p)
+            {
+                List<Vehicle> cars = NearbyVehicles(100f, false);
+                if (cars.Count == 0) return EventOutcome.Refuse("no cars nearby");
+                int want = (int)p["count"];
+                int done = 0;
+                for (int i = 0; i < want && cars.Count > 0; i++)
+                {
+                    int index = Rng.Next(cars.Count);
+                    try { cars[index].Explode(); done++; }
+                    catch { }
+                    cars.RemoveAt(index);
+                }
+                if (done == 0) return EventOutcome.Refuse("nothing would explode");
+                ChaosUi.Notify(done > 1 ? "Cars exploding x " + done : "A car just went up");
+                return EventOutcome.Ok();
+            };
+            m.Register(blowCar);
+
+            ChaosEvent launchCar = new ChaosEvent();
+            launchCar.Id = "launch_car";
+            launchCar.Name = "Car Launch";
+            launchCar.Category = "traffic";
+            launchCar.Cooldown = 120;
+            launchCar.Weight = 1.0;
+            launchCar.Params["count"] = ParamSpec.Number(1, 8, 3);
+            launchCar.Available = PlayerReady;
+            launchCar.Execute = delegate(Dictionary<string, double> p)
+            {
+                List<Vehicle> cars = NearbyVehicles(70f, false);
+                if (cars.Count == 0) return EventOutcome.Refuse("no cars nearby");
+                int want = (int)p["count"];
+                int done = 0;
+                for (int i = 0; i < want && cars.Count > 0; i++)
+                {
+                    int index = Rng.Next(cars.Count);
+                    try
+                    {
+                        cars[index].ApplyForce(new Vector3(
+                            (float)(Rng.NextDouble() * 12.0 - 6.0),
+                            (float)(Rng.NextDouble() * 12.0 - 6.0),
+                            35f));
+                        done++;
+                    }
+                    catch { }
+                    cars.RemoveAt(index);
+                }
+                if (done == 0) return EventOutcome.Refuse("nothing would move");
+                ChaosUi.Notify("Cars in the air x " + done);
+                return EventOutcome.Ok();
+            };
+            m.Register(launchCar);
+
+            // ---- the crowd ----------------------------------------------------
+            ChaosEvent riot = new ChaosEvent();
+            riot.Id = "riot";
+            riot.Name = "Riot";
+            riot.Category = "crowd";
+            riot.Cooldown = 300;
+            riot.Weight = 0.7;
+            riot.Available = PlayerReady;
+            riot.Execute = delegate
+            {
+                List<Ped> crowd = NearbyPeds(80f);
+                if (crowd.Count == 0) return EventOutcome.Refuse("nobody around");
+                int done = 0;
+                for (int i = 0; i < crowd.Count; i++)
+                {
+                    try
+                    {
+                        // Everyone hates everyone, then goes looking for a fight.
+                        crowd[i].ChangeRelationship(RelationshipGroup.Civillian_Male, Relationship.Hate);
+                        crowd[i].ChangeRelationship(RelationshipGroup.Civillian_Female, Relationship.Hate);
+                        crowd[i].BlockPermanentEvents = true;
+                        crowd[i].StartKillingSpree(true);
+                        done++;
+                    }
+                    catch { }
+                }
+                if (done == 0) return EventOutcome.Refuse("nobody would riot");
+                ChaosUi.Notify("The street turns on itself (" + done + ")");
+                return EventOutcome.Ok();
+            };
+            m.Register(riot);
+
+            ChaosEvent armEveryone = new ChaosEvent();
+            armEveryone.Id = "arm_everyone";
+            armEveryone.Name = "Everyone Is Armed";
+            armEveryone.Category = "crowd";
+            armEveryone.Cooldown = 240;
+            armEveryone.Weight = 0.8;
+            armEveryone.Available = PlayerReady;
+            armEveryone.Execute = delegate
+            {
+                List<Ped> crowd = NearbyPeds(70f);
+                if (crowd.Count == 0) return EventOutcome.Refuse("nobody around");
+                int done = 0;
+                for (int i = 0; i < crowd.Count; i++)
+                {
+                    try
+                    {
+                        Weapon w = GiveableWeapons[Rng.Next(GiveableWeapons.Length)];
+                        GiveWeapon(crowd[i], w, 150);
+                        crowd[i].Weapons.Select(w);
+                        done++;
+                    }
+                    catch { }
+                }
+                if (done == 0) return EventOutcome.Refuse("nobody took one");
+                ChaosUi.Notify("Everyone is armed now (" + done + ")");
+                return EventOutcome.Ok();
+            };
+            m.Register(armEveryone);
+
+            ChaosEvent massRagdoll = new ChaosEvent();
+            massRagdoll.Id = "mass_ragdoll";
+            massRagdoll.Name = "Everybody Falls Over";
+            massRagdoll.Category = "crowd";
+            massRagdoll.Cooldown = 150;
+            massRagdoll.Weight = 1.0;
+            massRagdoll.Params["seconds"] = ParamSpec.Number(1, 15, 5);
+            massRagdoll.Available = PlayerReady;
+            massRagdoll.Execute = delegate(Dictionary<string, double> p)
+            {
+                List<Ped> crowd = NearbyPeds(60f);
+                if (crowd.Count == 0) return EventOutcome.Refuse("nobody around");
+                int ms = (int)(p["seconds"] * 1000);
+                int done = 0;
+                for (int i = 0; i < crowd.Count; i++)
+                {
+                    try { crowd[i].ForceRagdoll(ms, false); done++; }
+                    catch { }
+                }
+                ChaosUi.Notify("Everybody falls over (" + done + ")");
+                return EventOutcome.Ok();
+            };
+            m.Register(massRagdoll);
+
+            ChaosEvent igniteCrowd = new ChaosEvent();
+            igniteCrowd.Id = "ignite_random";
+            igniteCrowd.Name = "Someone Is On Fire";
+            igniteCrowd.Category = "crowd";
+            igniteCrowd.Cooldown = 180;
+            igniteCrowd.Weight = 0.7;
+            igniteCrowd.Params["count"] = ParamSpec.Number(1, 6, 2);
+            igniteCrowd.Available = PlayerReady;
+            igniteCrowd.Execute = delegate(Dictionary<string, double> p)
+            {
+                List<Ped> crowd = NearbyPeds(60f);
+                if (crowd.Count == 0) return EventOutcome.Refuse("nobody around");
+                int want = (int)p["count"];
+                int done = 0;
+                for (int i = 0; i < want && crowd.Count > 0; i++)
+                {
+                    int index = Rng.Next(crowd.Count);
+                    try { World.StartFire(crowd[index].Position); done++; }
+                    catch { }
+                    crowd.RemoveAt(index);
+                }
+                if (done == 0) return EventOutcome.Refuse("nothing caught");
+                ChaosUi.Notify("Someone is on fire (" + done + ")");
+                return EventOutcome.Ok();
+            };
+            m.Register(igniteCrowd);
+
+            ChaosEvent rainingMen = new ChaosEvent();
+            rainingMen.Id = "raining_men";
+            rainingMen.Name = "Raining Men";
+            rainingMen.Category = "crowd";
+            rainingMen.Cooldown = 240;
+            rainingMen.Weight = 0.7;
+            rainingMen.Params["count"] = ParamSpec.Number(1, 12, 6);
+            rainingMen.Available = PlayerReady;
+            rainingMen.Execute = delegate(Dictionary<string, double> p)
+            {
+                int want = (int)p["count"];
+                int done = 0;
+                for (int i = 0; i < want; i++)
+                {
+                    Vector3 spot = PointAround(30f);
+                    // High enough to be a fall, low enough to stay loaded.
+                    spot = new Vector3(spot.X, spot.Y, spot.Z + 40f + (float)(Rng.NextDouble() * 25.0));
+                    Ped faller = SpawnPed(EnemyModels, spot);
+                    if (faller == null) continue;
+                    done++;
+                    try { faller.ForceRagdoll(20000, false); }
+                    catch { }
+                    Disown(faller);
+                }
+                if (done == 0) return EventOutcome.Refuse("nobody fell");
+                ChaosUi.Notify("It is raining men (" + done + ")");
+                return EventOutcome.Ok();
+            };
+            m.Register(rainingMen);
+
+            // ---- fire and brimstone -------------------------------------------
+            ChaosEvent fireArea = new ChaosEvent();
+            fireArea.Id = "fire_area";
+            fireArea.Name = "Firestorm";
+            fireArea.Category = "world";
+            fireArea.Cooldown = 240;
+            fireArea.Weight = 0.7;
+            fireArea.Params["count"] = ParamSpec.Number(1, 20, 8);
+            fireArea.Available = PlayerReady;
+            fireArea.Execute = delegate(Dictionary<string, double> p)
+            {
+                int want = (int)p["count"];
+                int done = 0;
+                for (int i = 0; i < want; i++)
+                {
+                    try { World.StartFire(PointAround(100f)); done++; }
+                    catch { }
+                }
+                if (done == 0) return EventOutcome.Refuse("nothing would burn");
+                ChaosUi.Notify("Fires breaking out (" + done + ")");
+                return EventOutcome.Ok();
+            };
+            m.Register(fireArea);
+
+            ChaosEvent gangWar = new ChaosEvent();
+            gangWar.Id = "gang_war";
+            gangWar.Name = "Gang War";
+            gangWar.Category = "hostiles";
+            gangWar.Cooldown = 420;
+            gangWar.Weight = 0.5;
+            gangWar.Params["count"] = ParamSpec.Number(2, 6, 4);
+            gangWar.Available = PlayerReady;
+            gangWar.Execute = delegate(Dictionary<string, double> p)
+            {
+                // Two sides that hate each other and ignore you -- a fight to
+                // watch rather than another fight to be in.
+                try
+                {
+                    World.SetGroupRelationship(RelationshipGroup.Gang_Russian1, Relationship.Hate, RelationshipGroup.Gang_Italian);
+                    World.SetGroupRelationship(RelationshipGroup.Gang_Italian, Relationship.Hate, RelationshipGroup.Gang_Russian1);
+                }
+                catch { }
+
+                int perSide = (int)p["count"];
+                List<Ped> sideA = new List<Ped>();
+                List<Ped> sideB = new List<Ped>();
+
+                for (int i = 0; i < perSide; i++)
+                {
+                    Ped a = SpawnPed(EnemyModels, NearbyGround(25f));
+                    if (a != null)
+                    {
+                        try
+                        {
+                            a.RelationshipGroup = RelationshipGroup.Gang_Russian1;
+                            GiveWeapon(a, Weapon.SMG_Uzi, 200);
+                            a.BlockPermanentEvents = true;
+                        }
+                        catch { }
+                        sideA.Add(a);
+                    }
+                    Ped b = SpawnPed(EnemyModels, NearbyGround(35f));
+                    if (b != null)
+                    {
+                        try
+                        {
+                            b.RelationshipGroup = RelationshipGroup.Gang_Italian;
+                            GiveWeapon(b, Weapon.Rifle_AK47, 200);
+                            b.BlockPermanentEvents = true;
+                        }
+                        catch { }
+                        sideB.Add(b);
+                    }
+                }
+
+                if (sideA.Count == 0 || sideB.Count == 0) return EventOutcome.Refuse("no room for a fight");
+
+                for (int i = 0; i < sideA.Count; i++)
+                {
+                    try { sideA[i].Task.FightAgainst(sideB[Rng.Next(sideB.Count)]); } catch { }
+                    Disown(sideA[i]);
+                }
+                for (int i = 0; i < sideB.Count; i++)
+                {
+                    try { sideB[i].Task.FightAgainst(sideA[Rng.Next(sideA.Count)]); } catch { }
+                    Disown(sideB[i]);
+                }
+
+                ChaosUi.Notify("Gang war! " + sideA.Count + " v " + sideB.Count);
+                return EventOutcome.Ok();
+            };
+            m.Register(gangWar);
+
+            ChaosEvent drunk = new ChaosEvent();
+            drunk.Id = "drunk";
+            drunk.Name = "Drunk";
+            drunk.Category = "player";
+            drunk.Cooldown = 300;
+            drunk.Weight = 0.8;
+            drunk.Duration = 30;
+            drunk.Params["seconds"] = ParamSpec.Number(10, 120, 30);
+            drunk.Available = PlayerReady;
+            drunk.Execute = delegate
+            {
+                ChaosUi.Notify("Niko has had a few");
+                return EventOutcome.OkWith(new int[] { 0 });
+            };
+            // GTA IV's drunk state is not reachable through this API, so this is
+            // built out of what is: a stumble every couple of seconds.
+            drunk.Tick = delegate(object state)
+            {
+                int[] next = state as int[];
+                if (next == null) return;
+                if (Game.GameTime < next[0]) return;
+                next[0] = Game.GameTime + 1500 + Rng.Next(1500);
+                try
+                {
+                    Ped me = Me();
+                    if (me.isInVehicle()) return;   // stumbling at the wheel is just a crash
+                    me.ForceRagdoll(600, true);
+                }
+                catch { }
+            };
+            m.Register(drunk);
 
             // ---- the big one -------------------------------------------------
             ChaosEvent everything = new ChaosEvent();
@@ -1621,6 +2115,7 @@ namespace ChaosEngine
 
                 _events.Update();
                 _ipc.Update();
+                ChaosUi.SetActive(_events.ActiveEvents());
                 ChaosUi.Update();
             }
             catch (Exception ex)
