@@ -1189,6 +1189,30 @@ namespace ChaosEngine
             return found;
         }
 
+        /// <summary>
+        /// Shove `target` along the line from `origin` to it. A negative
+        /// strength pulls them in instead, which is the only difference between
+        /// a punch and a magnet.
+        ///
+        /// The direction is worked out by hand rather than with Vector3's own
+        /// helpers, because this API's Normalize mutates in place and that is an
+        /// easy thing to get quietly wrong.
+        /// </summary>
+        private static void LaunchFrom(Vector3 origin, Ped target, float strength, float lift)
+        {
+            Vector3 at = target.Position;
+            float dx = at.X - origin.X;
+            float dy = at.Y - origin.Y;
+            float length = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (length < 0.1f)
+            {
+                // Standing on top of each other: pick a direction rather than
+                // dividing by nearly zero.
+                dx = 1f; dy = 0f; length = 1f;
+            }
+            target.ApplyForce(new Vector3(dx / length * strength, dy / length * strength, lift));
+        }
+
         /// <summary>Turn a spawned ped into something that actually comes for you.</summary>
         private static void MakeHostile(Ped ped, Weapon weapon, int accuracy)
         {
@@ -1684,6 +1708,37 @@ namespace ChaosEngine
             };
             m.Register(boost);
 
+            ChaosEvent reverse = new ChaosEvent();
+            reverse.Id = "car_reverse";
+            reverse.Name = "Reverse Gear";
+            reverse.Category = "traffic";
+            reverse.Cooldown = 240;
+            reverse.Weight = 0.8;
+            reverse.Duration = 20;
+            reverse.Params["seconds"] = ParamSpec.Number(5, 60, 20);
+            reverse.Available = PlayerReady;
+            reverse.Execute = delegate
+            {
+                ChaosUi.Notify("Everyone is in reverse");
+                return EventOutcome.Ok();
+            };
+            // Negative Y in the vehicle's own frame: they try to drive forward
+            // and travel backwards instead.
+            reverse.Tick = delegate
+            {
+                List<Vehicle> cars = NearbyVehicles(90f, false);
+                for (int i = 0; i < cars.Count; i++)
+                {
+                    try
+                    {
+                        if (!cars[i].isDriveable) continue;
+                        cars[i].ApplyForceRelative(new Vector3(0f, -18f, 0f));
+                    }
+                    catch { }
+                }
+            };
+            m.Register(reverse);
+
             ChaosEvent blowCar = new ChaosEvent();
             blowCar.Id = "blow_car";
             blowCar.Name = "Car Bomb";
@@ -1979,6 +2034,76 @@ namespace ChaosEngine
                 return EventOutcome.Ok();
             };
             m.Register(gangWar);
+
+            ChaosEvent punch = new ChaosEvent();
+            punch.Id = "super_punch";
+            punch.Name = "Super Punch";
+            punch.Category = "player";
+            punch.Cooldown = 300;
+            punch.Weight = 0.8;
+            punch.Duration = 45;
+            punch.Params["seconds"] = ParamSpec.Number(10, 180, 45);
+            punch.Available = PlayerReady;
+            punch.Execute = delegate
+            {
+                ChaosUi.Notify("Your fists have opinions");
+                // The list is who has already been sent flying: HasBeenDamagedBy
+                // stays true after a hit, so without this they would be launched
+                // again on every single tick.
+                return EventOutcome.OkWith(new List<int>());
+            };
+            punch.Tick = delegate(object state)
+            {
+                List<int> launched = state as List<int>;
+                if (launched == null) return;
+                Ped me = Me();
+                List<Ped> near = NearbyPeds(6f);
+                for (int i = 0; i < near.Count; i++)
+                {
+                    Ped victim = near[i];
+                    try
+                    {
+                        if (!victim.HasBeenDamagedBy(me)) continue;
+                        int id = victim.MemoryAddress;
+                        if (launched.Contains(id)) continue;
+                        launched.Add(id);
+                        LaunchFrom(me.Position, victim, 45f, 18f);
+                        victim.ForceRagdoll(6000, false);
+                    }
+                    catch { }
+                }
+            };
+            m.Register(punch);
+
+            ChaosEvent magnet = new ChaosEvent();
+            magnet.Id = "pull_crowd";
+            magnet.Name = "Get Over Here";
+            magnet.Category = "crowd";
+            magnet.Cooldown = 180;
+            magnet.Weight = 0.8;
+            magnet.Params["radius"] = ParamSpec.Number(10, 120, 60);
+            magnet.Available = PlayerReady;
+            magnet.Execute = delegate(Dictionary<string, double> p)
+            {
+                Ped me = Me();
+                List<Ped> crowd = NearbyPeds((float)p["radius"]);
+                if (crowd.Count == 0) return EventOutcome.Refuse("nobody around");
+                int done = 0;
+                for (int i = 0; i < crowd.Count; i++)
+                {
+                    try
+                    {
+                        // Pull towards the player rather than away.
+                        LaunchFrom(crowd[i].Position, crowd[i], -38f, 14f);
+                        crowd[i].ForceRagdoll(5000, false);
+                        done++;
+                    }
+                    catch { }
+                }
+                ChaosUi.Notify("Everyone comes to you (" + done + ")");
+                return EventOutcome.Ok();
+            };
+            m.Register(magnet);
 
             ChaosEvent drunk = new ChaosEvent();
             drunk.Id = "drunk";

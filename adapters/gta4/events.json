@@ -270,6 +270,36 @@
       }
     },
     {
+      "id": "car_reverse",
+      "name": "Reverse Gear",
+      "category": "traffic",
+      "cooldown": 240,
+      "weight": 0.8,
+      "parameters": {
+        "seconds": 20
+      }
+    },
+    {
+      "id": "super_punch",
+      "name": "Super Punch",
+      "category": "player",
+      "cooldown": 300,
+      "weight": 0.8,
+      "parameters": {
+        "seconds": 45
+      }
+    },
+    {
+      "id": "pull_crowd",
+      "name": "Get Over Here",
+      "category": "crowd",
+      "cooldown": 180,
+      "weight": 0.8,
+      "parameters": {
+        "radius": 60
+      }
+    },
+    {
       "id": "chaos",
       "name": "CHAOS",
       "category": "world",
