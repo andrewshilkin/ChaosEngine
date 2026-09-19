@@ -21,23 +21,39 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const CSC = 'C:/Windows/Microsoft.NET/Framework/v4.0.30319/csc.exe';
 
+const SHDN = 'scripts/for Developers/bin/ScriptHookDotNet.dll';
+
+/**
+ * Where GTA IV might be. GTA4_DIR wins; otherwise the default install roots
+ * plus a Steam library on any drive, since Steam lets you put one anywhere.
+ */
+function gta4Candidates() {
+  const roots = [];
+  if (process.env['GTA4_DIR']) roots.push(process.env['GTA4_DIR']);
+
+  roots.push(
+    'C:/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto IV/GTAIV',
+    'C:/Program Files (x86)/Rockstar Games/Grand Theft Auto IV/GTAIV',
+    'C:/Games/Grand Theft Auto IV/GTAIV',
+  );
+
+  for (const drive of 'CDEFGH') {
+    roots.push(`${drive}:/SteamLibrary/steamapps/common/Grand Theft Auto IV/GTAIV`);
+    roots.push(`${drive}:/Steam/steamapps/common/Grand Theft Auto IV/GTAIV`);
+  }
+
+  return roots.map((dir) => path.join(dir, SHDN));
+}
+
 const ADAPTERS = [
   {
     name: 'gta4',
     source: path.join(root, 'adapters/gta4/game-mod/ChaosEngine.cs'),
-    // Shipped with the Script Hook, under the game's scripts folder. Set
-    // GTA4_DIR to point at an install anywhere; the rest are the usual Steam
-    // locations so the check works out of the box for most people.
-    reference: [
-      process.env['GTA4_DIR'],
-      'C:/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto IV/GTAIV',
-      'C:/Program Files (x86)/Rockstar Games/Grand Theft Auto IV/GTAIV',
-      'D:/SteamLibrary/steamapps/common/Grand Theft Auto IV/GTAIV',
-      'E:/SteamLibrary/steamapps/common/Grand Theft Auto IV/GTAIV',
-      'C:/Games/Grand Theft Auto IV/GTAIV',
-    ]
-      .filter(Boolean)
-      .map((dir) => path.join(dir, 'scripts/for Developers/bin/ScriptHookDotNet.dll')),
+    // Shipped with the Script Hook, under the game's scripts folder.
+    // Set GTA4_DIR to point at an install anywhere. Otherwise the usual
+    // install roots are tried, and every Steam library drive, so the check
+    // works out of the box wherever the game happens to live.
+    reference: gta4Candidates(),
   },
 ];
 
