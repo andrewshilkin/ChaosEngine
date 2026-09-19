@@ -25,11 +25,19 @@ const ADAPTERS = [
   {
     name: 'gta4',
     source: path.join(root, 'adapters/gta4/game-mod/ChaosEngine.cs'),
-    // Shipped with the Script Hook, under the game's scripts folder.
+    // Shipped with the Script Hook, under the game's scripts folder. Set
+    // GTA4_DIR to point at an install anywhere; the rest are the usual Steam
+    // locations so the check works out of the box for most people.
     reference: [
-      'C:/Games/Grand Theft Auto IV/GTAIV/scripts/for Developers/bin/ScriptHookDotNet.dll',
-      process.env['GTA4_DIR'] ? path.join(process.env['GTA4_DIR'], 'scripts/for Developers/bin/ScriptHookDotNet.dll') : null,
-    ],
+      process.env['GTA4_DIR'],
+      'C:/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto IV/GTAIV',
+      'C:/Program Files (x86)/Rockstar Games/Grand Theft Auto IV/GTAIV',
+      'D:/SteamLibrary/steamapps/common/Grand Theft Auto IV/GTAIV',
+      'E:/SteamLibrary/steamapps/common/Grand Theft Auto IV/GTAIV',
+      'C:/Games/Grand Theft Auto IV/GTAIV',
+    ]
+      .filter(Boolean)
+      .map((dir) => path.join(dir, 'scripts/for Developers/bin/ScriptHookDotNet.dll')),
   },
 ];
 

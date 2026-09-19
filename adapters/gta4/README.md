@@ -55,7 +55,7 @@ To point the Discord bot at GTA IV instead of Anomaly, change two lines in
 "game": {
   "gameRoot": "C:/Games/Grand Theft Auto IV/GTAIV",
   "spoolDir": "C:/Games/Grand Theft Auto IV/GTAIV/scripts/chaos",
-  "manifest": "C:/Games/ChaosEngine/adapters/gta4/events.json"
+  "manifest": "../../adapters/gta4/events.json"
 }
 ```
 
